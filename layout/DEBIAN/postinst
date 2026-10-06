@@ -1,0 +1,4 @@
+#!/bin/sh
+# 安装后自动杀掉相机进程，Sileo 会提示「重启注入」
+killall -9 Camera 2>/dev/null
+exit 0

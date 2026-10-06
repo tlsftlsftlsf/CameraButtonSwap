@@ -1,0 +1,10 @@
+Package: com.yourname.camerabuttonswap
+Name: CameraButtonSwap
+Version: 1.1.0
+Architecture: iphoneos-arm64
+Description: 相机「扫描文本」按钮移动到左侧，方便左撇子单手操作。
+Maintainer: Your Name <your@email.com>
+Author: Your Name <your@email.com>
+Section: Tweaks
+Tag: role::hacker, purpose::extension
+Depends: mobilesubstrate (>= 0.9.5000) | ellekit, firmware (>= 15.0)

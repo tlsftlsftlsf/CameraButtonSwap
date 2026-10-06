@@ -1,0 +1,4 @@
+#!/bin/sh
+# 卸载后杀掉相机进程，恢复原始布局
+killall -9 Camera 2>/dev/null
+exit 0
