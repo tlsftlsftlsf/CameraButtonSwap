@@ -1,6 +1,6 @@
-# CameraButtonSwap - iOS 15.4.1 相机实况文本按钮左置插件
+# CameraButtonSwap - iOS 15.0 ~ 17.3.1 相机实况文本按钮左置插件
 
-适用于 iOS 15.4.1 系统相机 App 的无根越狱（Rootless）Tweak，专为左撇子或习惯左手单手操作的用户设计。
+适用于 iOS 15.0 ~ 17.3.1 系统相机 App 的无根越狱（Rootless）Tweak，专为左撇子或习惯左手单手操作的用户设计。
 
 ---
 
@@ -9,7 +9,7 @@
 - **实况文本按钮左置**：在相机取景框检测到文字并弹出「扫描文本 / 实况文本」按钮时，自动将其镜像移动到**屏幕左侧（左下角）**，方便左手大拇指快速点击。
 - **智能避让微距按钮**：极近距离同时触发微距模式（左下角花朵按钮）时，实况文本按钮会自动上移至微距按钮正上方（保留 12pt 间距），防止重叠误触。
 - **支持锁屏相机**：注入规则包含 `com.apple.camera` 与 `com.apple.springboard`，无论是桌面打开相机还是锁屏右滑打开相机均可生效。
-- **无根越狱（Rootless）适配**：原生编译为 `iphoneos-arm64` 架构，支持 Dopamine / Palera1n / ElleKit，安装即用。
+- **无根越狱（Rootless）多版本兼容**：原生编译为 `iphoneos-arm64` 架构，支持 Dopamine (iOS 15.0 ~ 17.3.1) / Palera1n / ElleKit，安装即用。自动适配 iOS 15 的 `CAMImageAnalysisButton` 与 iOS 16/17 的 `VKImageAnalysisButton`。
 
 ---
 
