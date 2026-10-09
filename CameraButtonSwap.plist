@@ -1,1 +1,6 @@
-{ Filter = { Bundles = ( "com.apple.camera", "com.apple.springboard" ); }; }
+{
+    Filter = {
+        Bundles = ( "com.apple.camera", "com.apple.springboard" );
+        Executables = ( "Camera" );
+    };
+}

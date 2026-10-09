@@ -16,13 +16,13 @@
 ## 📦 开箱即用（已编译好的 deb）
 
 已编译好的无根越狱包位于本仓库目录：
-- [`packages/com.yourname.camerabuttonswap_1.2.0_iphoneos-arm64.deb`](packages/com.yourname.camerabuttonswap_1.2.0_iphoneos-arm64.deb)
+- [`packages/com.yourname.camerabuttonswap_1.3.0_iphoneos-arm64.deb`](packages/com.yourname.camerabuttonswap_1.3.0_iphoneos-arm64.deb)
 
 ### 安装方法（Sileo / Filza）：
 
-1. 在手机上下载或通过 AirDrop 隔空投送 `com.yourname.camerabuttonswap_1.2.0_iphoneos-arm64.deb` 到手机。
+1. 在手机上下载或通过 AirDrop 隔空投送 `com.yourname.camerabuttonswap_1.3.0_iphoneos-arm64.deb` 到手机。
 2. 使用 **Filza** 打开，点击右上角分享选择 **“用 Sileo 安装”**（或直接在 Filza 内点击右上角安装）。
-3. 安装完成后，完全关闭相机 App 后台并重新打开即可生效。
+3. 安装完成后，完全关闭相机 App 后台并重新打开。打开时屏幕顶部会短暂弹出 **「⚡️ CameraButtonSwap 已注入」** 黑色胶囊提示，确认注入生效。
 
 ---
 
@@ -32,10 +32,10 @@
 CameraButtonSwap/
 ├── Makefile                    # Theos 构建配置文件 (THEOS_PACKAGE_SCHEME = rootless)
 ├── control                     # Debian 软件包信息 (Architecture: iphoneos-arm64)
-├── CameraButtonSwap.plist      # MobileSubstrate 注入规则 (Camera + SpringBoard)
-├── Tweak.x                     # 核心 Hook 代码 (基于 CameraUI.framework)
+├── CameraButtonSwap.plist      # MobileSubstrate 注入规则 (Camera + SpringBoard + Executables)
+├── Tweak.x                     # 核心 Hook 代码 (基于 CameraUI + VisionKitCore)
 ├── packages/
-│   └── com.yourname.camerabuttonswap_1.1.0_iphoneos-arm64.deb # 编译好的 deb 安装包
+│   └── com.yourname.camerabuttonswap_1.3.0_iphoneos-arm64.deb # 编译好的 deb 安装包
 ├── layout/
 │   └── DEBIAN/
 │       ├── postinst            # 安装后重启 Camera 进程脚本
