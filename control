@@ -1,8 +1,8 @@
 Package: com.yourname.camerabuttonswap
 Name: CameraButtonSwap
-Version: 2.5.0
+Version: 2.6.0
 Architecture: iphoneos-arm64
-Description: 相机「扫描文本」按钮移动到左侧（iOS 17.3.1 纯净正式版，修复点击按钮后文本无法选中的问题，零外部依赖）
+Description: 相机「扫描文本」按钮移动到左侧（支持屏幕长按自由拖拽自定义位置，松开即刻记忆，双击复位，完美保护文本划词选择）
 Maintainer: Your Name <your@email.com>
 Author: Your Name <your@email.com>
 Section: Tweaks
