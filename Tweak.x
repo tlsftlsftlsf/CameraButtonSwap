@@ -21,7 +21,7 @@
 #import <dlfcn.h>
 #import <AudioToolbox/AudioToolbox.h>
 
-#define CBS_TAG @"[CameraButtonSwap-v2.1]"
+#define CBS_TAG @"[CameraButtonSwap-v2.4]"
 
 // ============================================================================
 // 前向接口声明
@@ -43,7 +43,7 @@
 @end
 
 // ============================================================================
-// 双通道日志与震动反馈
+// 多通道日志与震动反馈
 // ============================================================================
 
 static void writeCBSLog(NSString *format, ...) {
@@ -59,19 +59,33 @@ static void writeCBSLog(NSString *format, ...) {
     NSString *timestamp = [formatter stringFromDate:[NSDate date]];
     NSString *line = [NSString stringWithFormat:@"[%@] %@\n", timestamp, msg];
     
-    NSArray *paths = @[
+    NSMutableArray *paths = [NSMutableArray arrayWithObjects:
         @"/var/mobile/Library/Logs/CameraButtonSwap.log",
-        @"/tmp/camerabuttonswap.log"
-    ];
+        @"/tmp/camerabuttonswap.log",
+        @"/var/jb/tmp/camerabuttonswap.log",
+        @"/var/mobile/Media/camerabuttonswap.log",
+        nil];
+    
+    NSString *tmpDir = NSTemporaryDirectory();
+    if (tmpDir.length > 0) {
+        [paths addObject:[tmpDir stringByAppendingPathComponent:@"camerabuttonswap.log"]];
+    }
+    NSArray *docDirs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    if (docDirs.count > 0) {
+        [paths addObject:[docDirs.firstObject stringByAppendingPathComponent:@"camerabuttonswap.log"]];
+    }
+    
     for (NSString *path in paths) {
-        NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
-        if (handle) {
-            [handle seekToEndOfFile];
-            [handle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
-            [handle closeFile];
-        } else {
-            [line writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        }
+        @try {
+            NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
+            if (handle) {
+                [handle seekToEndOfFile];
+                [handle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+                [handle closeFile];
+            } else {
+                [line writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            }
+        } @catch (id e) {}
     }
 }
 
@@ -282,21 +296,29 @@ static void showInjectionFeedback(UIViewController *vc) {
     writeCBSLog(@"[Feedback] 触发触感震动反馈与注入通知");
     
     // 2. 弹出系统级 UIAlertController (无法被任何取景器遮挡)
-    if (vc) {
-        dispatch_async(dispatch_get_main_queue(), ^{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *presenter = vc;
+        while (presenter.presentedViewController) {
+            presenter = presenter.presentedViewController;
+        }
+        if (!presenter) {
+            presenter = [UIApplication sharedApplication].keyWindow.rootViewController;
+        }
+        
+        if (presenter) {
             UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"⚡️ CameraButtonSwap"
-                                                                           message:@"插件已成功注入相机进程！\n实况文本按钮已切换至左侧 (v2.1)"
+                                                                           message:@"插件已成功注入相机进程！\n实况文本按钮已切换至左侧 (v2.4)"
                                                                     preferredStyle:UIAlertControllerStyleAlert];
             [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
             
-            [vc presentViewController:alert animated:YES completion:^{
+            [presenter presentViewController:alert animated:YES completion:^{
                 // 2.5 秒后自动淡出关闭，不干扰拍照
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     [alert dismissViewControllerAnimated:YES completion:nil];
                 });
             }];
-        });
-    }
+        }
+    });
     
     // 3. 在活跃 UIWindow 上挂载黑金胶囊 HUD
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
