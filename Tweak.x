@@ -1,62 +1,40 @@
 /*
- * CameraButtonSwap - iOS 17 终极适配版 (v1.3.0)
+ * CameraButtonSwap - iOS 17 / 17.3.1 深度重构版 (v2.0.0)
  *
- * 核心特性：
- *   1. 启动注入提示 (Toast HUD)：
- *      - 打开相机时在屏幕顶部短暂提示「CameraButtonSwap 已加载」，让用户 100% 确认越狱注入成功。
- *   2. 四重实况文本定位匹配引擎：
- *      - 策略 A：匹配类名 (ImageAnalysisButton, CornerLookupButton, ActionInfoView, LiveText 等)
- *      - 策略 B：匹配 SF Symbol 图标 (text.viewfinder 图标自动识别)
- *      - 策略 C：匹配无障碍标识 (Accessibility Identifier / Label)
- *      - 策略 D：右下角浮动按钮几何特征捕获
- *   3. 三重强力移位引擎：
- *      - 约束反转：停用 Trailing 约束并添加 Leading 约束
- *      - 容器冒泡：自动查找并移动包裹实况文本按钮的外层右侧小容器
- *      - Transform 强制平移兜底：使用 CGAffineTransformMakeTranslation 确保即使 Auto Layout 强锁死，视觉与触摸交互也必然位于左侧！
- *   4. 本地诊断日志：
- *      - 详细日志写入 /var/mobile/Documents/CameraButtonSwap.log
+ * 核心架构设计：
+ *   1. 多维度注入验证与可视化反馈：
+ *      - 进程唤醒即在顶层 UIWindow 弹出黑金胶囊 HUD 提示："⚡️ CameraButtonSwap 已注入 (iOS 17 适配版)"。
+ *      - 双通道日志：同时输出至 NSLog 与 /var/mobile/Library/Logs/CameraButtonSwap.log（及 /tmp/camerabuttonswap.log），方便排查。
+ *   2. 类级 setFrame: / setCenter: 精准拦截：
+ *      - 直接 Hook CAMImageAnalysisButton、VKImageAnalysisButton、VKCCornerLookupButton 的坐标赋值方法，
+ *        在任何布局引擎（手动或 Auto Layout）将其置于右侧时，即刻计算并重定向至左下侧。
+ *   3. 宿主容器布局 Hook (CAMFullscreenViewfinder & CAMBottomBar)：
+ *      - 拦截 layoutSubviews，直接获取 _imageAnalysisButton 实例并矫正 frame，
+ *        同时检测微距按钮 (_autoMacroButton)，若微距激活则自动将文本按钮上移避让。
+ *   4. 顶级容器冒泡与约束反转 (Container Bubbling & Auto Layout Inversion)：
+ *      - iOS 17 将实况文本组件包装于独立容器中，插件自动向上追溯容器并解除 Trailing 约束、施加 Leading 约束。
+ *      - 物理图层平移兜底 (CGAffineTransformMakeTranslation) 确保绝对不被回弹。
+ *   5. 高频看门狗与动态感知 (Watchdog + didAddSubview)：
+ *      - 确保文本被识别并弹出的毫秒级时间内被拉至左侧。
  */
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <dlfcn.h>
 
-#define CBS_LOG(fmt, ...) do { \
-    NSString *_msg = [NSString stringWithFormat:@"[CameraButtonSwap] " fmt, ##__VA_ARGS__]; \
-    NSLog(@"%@", _msg); \
-    appendDiagnosticLog(_msg); \
-} while(0)
+#define CBS_TAG @"[CameraButtonSwap-v2]"
 
 // ============================================================================
-// 日志持久化辅助
+// 前向接口声明
 // ============================================================================
 
-static void appendDiagnosticLog(NSString *text) {
-    static NSString *logPath = @"/var/mobile/Documents/CameraButtonSwap.log";
-    static NSDateFormatter *formatter = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        formatter = [[NSDateFormatter alloc] init];
-        [formatter setDateFormat:@"yyyy-MM-dd HH:mm:ss.SSS"];
-    });
-    
-    NSString *line = [NSString stringWithFormat:@"[%@] %@\n", [formatter stringFromDate:[NSDate date]], text];
-    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:logPath];
-    if (!handle) {
-        [[NSFileManager defaultManager] createFileAtPath:logPath contents:nil attributes:nil];
-        handle = [NSFileHandle fileHandleForWritingAtPath:logPath];
-    }
-    if (handle) {
-        [handle seekToEndOfFile];
-        [handle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
-        [handle closeFile];
-    }
-}
+@interface CAMImageAnalysisButton : UIButton
+@end
 
-// ============================================================================
-// 前向声明与辅助判断
-// ============================================================================
+@interface VKImageAnalysisButton : UIButton
+@end
 
-@interface CAMViewfinderViewController : UIViewController
+@interface VKCCornerLookupButton : UIView
 @end
 
 @interface CAMFullscreenViewfinder : UIView
@@ -65,101 +43,209 @@ static void appendDiagnosticLog(NSString *text) {
 @interface CAMBottomBar : UIView
 @end
 
-// 检查是否包含 text.viewfinder 或文本相关特征
-static BOOL isLiveTextAffordance(UIView *view) {
+// ============================================================================
+// 双通道日志输出
+// ============================================================================
+
+static void writeCBSLog(NSString *format, ...) {
+    va_list args;
+    va_start(args, format);
+    NSString *msg = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+    
+    NSLog(@"%@ %@", CBS_TAG, msg);
+    
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    [formatter setDateFormat:@"yyyy-MM-dd HH:mm:ss.SSS"];
+    NSString *timestamp = [formatter stringFromDate:[NSDate date]];
+    NSString *line = [NSString stringWithFormat:@"[%@] %@\n", timestamp, msg];
+    
+    NSArray *paths = @[
+        @"/var/mobile/Library/Logs/CameraButtonSwap.log",
+        @"/tmp/camerabuttonswap.log"
+    ];
+    for (NSString *path in paths) {
+        NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
+        if (handle) {
+            [handle seekToEndOfFile];
+            [handle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+            [handle closeFile];
+        } else {
+            [line writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        }
+    }
+}
+
+// ============================================================================
+// 元素识别辅助函数
+// ============================================================================
+
+// 识别实况文本按钮与容器
+static BOOL isLiveTextElement(UIView *view) {
     if (!view) return NO;
     
-    // 1. 类名匹配
-    NSString *cls = NSStringFromClass([view class]);
-    if ([cls containsString:@"ImageAnalysis"] ||
-        [cls containsString:@"CornerLookup"] ||
-        [cls containsString:@"ActionInfo"] ||
-        [cls containsString:@"LiveText"] ||
-        [cls containsString:@"ScanText"] ||
-        [cls containsString:@"TextRecognition"]) {
+    NSString *className = NSStringFromClass([view class]);
+    
+    // 1. 类名特征匹配
+    if ([className containsString:@"ImageAnalysis"] ||
+        [className containsString:@"CornerLookup"] ||
+        [className containsString:@"ActionInfo"] ||
+        [className containsString:@"LiveText"] ||
+        [className containsString:@"ScanText"] ||
+        [className containsString:@"TextRecognition"] ||
+        [className containsString:@"DataScanner"]) {
         return YES;
     }
     
-    // 2. accessibilityIdentifier / label 匹配
-    NSString *aid = view.accessibilityIdentifier;
-    if (aid) {
-        NSString *lower = [aid lowercaseString];
-        if ([lower containsString:@"analysis"] ||
-            [lower containsString:@"lookup"] ||
-            [lower containsString:@"livetext"] ||
-            [lower containsString:@"live-text"] ||
-            [lower containsString:@"scantext"] ||
-            [lower containsString:@"scan-text"]) {
-            return YES;
-        }
-    }
-    
-    // 3. 检查是否有 text.viewfinder 相关的图像
-    if ([view isKindOfClass:[UIButton class]]) {
-        UIButton *btn = (UIButton *)view;
-        UIImage *img = [btn imageForState:UIControlStateNormal];
-        if (img && [[img description] containsString:@"viewfinder"]) {
-            return YES;
-        }
-    }
-    
-    for (UIView *sub in view.subviews) {
-        if ([sub isKindOfClass:[UIImageView class]]) {
-            UIImage *img = [(UIImageView *)sub image];
+    // 2. 检查按钮是否带有 text.viewfinder 图标
+    if ([view isKindOfClass:[UIButton class]] || [view isKindOfClass:[UIControl class]]) {
+        if ([view isKindOfClass:[UIButton class]]) {
+            UIButton *b = (UIButton *)view;
+            UIImage *img = [b currentImage] ?: [b imageForState:UIControlStateNormal];
             if (img && [[img description] containsString:@"viewfinder"]) {
                 return YES;
             }
         }
+        for (UIView *sub in view.subviews) {
+            if ([sub isKindOfClass:[UIImageView class]]) {
+                UIImage *img = [(UIImageView *)sub image];
+                if (img && [[img description] containsString:@"viewfinder"]) {
+                    return YES;
+                }
+            }
+        }
+    }
+    
+    // 3. Accessibility 标识特征
+    NSString *aid = view.accessibilityIdentifier;
+    if (aid && ([aid localizedCaseInsensitiveContainsString:@"analysis"] ||
+                [aid localizedCaseInsensitiveContainsString:@"lookup"] ||
+                [aid localizedCaseInsensitiveContainsString:@"live-text"] ||
+                [aid localizedCaseInsensitiveContainsString:@"scantext"])) {
+        return YES;
     }
     
     return NO;
 }
 
-// 检查是否是微距按钮 (花朵)
-static BOOL isMacroAffordance(UIView *view) {
+// 识别微距模式花朵按钮
+static BOOL isMacroElement(UIView *view) {
     if (!view) return NO;
-    NSString *cls = NSStringFromClass([view class]);
-    return [cls containsString:@"AutoMacro"] || [cls containsString:@"MacroButton"] || [cls containsString:@"MacroControl"];
+    NSString *className = NSStringFromClass([view class]);
+    return [className containsString:@"AutoMacro"] ||
+           [className containsString:@"MacroButton"] ||
+           [className containsString:@"MacroControl"];
 }
 
 // ============================================================================
-// 强力移位引擎：将目标（或外层容器）彻底移至左侧
+// 坐标与避让计算核心
 // ============================================================================
 
-static void forceRelocateToLeft(UIView *view) {
-    if (!view) return;
+static CGRect computeLeftFrame(UIView *view, CGRect origFrame) {
     UIView *superview = view.superview;
+    CGFloat superW = superview ? superview.bounds.size.width : [UIScreen mainScreen].bounds.size.width;
+    if (superW <= 0) superW = 390.0;
+    
+    CGRect f = origFrame;
+    // 如果已经在左侧，直接返回
+    if (f.origin.x < superW * 0.45 && f.origin.x >= 0) {
+        return f;
+    }
+    
+    // 计算离左侧的安全边距（保持与原右侧边距对称，默认 16~20pt）
+    CGFloat rightMargin = superW - (origFrame.origin.x + origFrame.size.width);
+    if (rightMargin < 12.0) rightMargin = 16.0;
+    if (rightMargin > 80.0) rightMargin = 20.0;
+    
+    f.origin.x = rightMargin;
+    
+    // 智能避让微距按钮
+    if (superview) {
+        for (UIView *sibling in superview.subviews) {
+            if (sibling != view && isMacroElement(sibling) && !sibling.hidden && sibling.alpha > 0.05) {
+                if (sibling.frame.origin.x < superW / 2.0) {
+                    CGRect macroRect = sibling.frame;
+                    if (CGRectIntersectsRect(f, CGRectInset(macroRect, -8, -8))) {
+                        f.origin.y = macroRect.origin.y - f.size.height - 12.0;
+                    }
+                }
+                break;
+            }
+        }
+    }
+    
+    return f;
+}
+
+static CGPoint computeLeftCenter(UIView *view, CGPoint origCenter) {
+    UIView *superview = view.superview;
+    CGFloat superW = superview ? superview.bounds.size.width : [UIScreen mainScreen].bounds.size.width;
+    if (superW <= 0) superW = 390.0;
+    
+    CGPoint c = origCenter;
+    if (c.x < superW * 0.45 && c.x >= 0) {
+        return c;
+    }
+    
+    CGFloat rightMargin = superW - origCenter.x;
+    if (rightMargin < 20.0) rightMargin = 36.0;
+    c.x = rightMargin;
+    
+    if (superview) {
+        for (UIView *sibling in superview.subviews) {
+            if (sibling != view && isMacroElement(sibling) && !sibling.hidden && sibling.alpha > 0.05) {
+                if (sibling.center.x < superW / 2.0) {
+                    CGFloat dist = fabs(c.y - sibling.center.y);
+                    if (dist < 55.0) {
+                        c.y = sibling.center.y - 55.0;
+                    }
+                }
+                break;
+            }
+        }
+    }
+    
+    return c;
+}
+
+// ============================================================================
+// 容器冒泡与重定位引擎
+// ============================================================================
+
+static void relocateLiveTextToLeft(UIView *element) {
+    if (!element) return;
+    UIView *superview = element.superview;
     if (!superview) return;
     
     CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
     if (screenWidth <= 0 || screenWidth > 2000.0) screenWidth = 390.0;
     
-    UIWindow *window = view.window ?: superview.window;
-    CGRect winRect = window ? [superview convertRect:view.frame toView:window] : view.frame;
+    UIWindow *window = element.window ?: superview.window;
+    CGRect winRect = window ? [superview convertRect:element.frame toView:window] : element.frame;
     CGFloat winMidX = CGRectGetMidX(winRect);
     
-    // 如果已经在屏幕左半边，不再重复处理
+    // 如果已经在屏幕左半边，无需重复处理
     if (winMidX > 0 && winMidX < screenWidth * 0.45) {
         return;
     }
     
-    CBS_LOG(@"[Relocate] 发现右侧目标: %@ (WinMidX=%.1f), 执行左移", NSStringFromClass([view class]), winMidX);
+    writeCBSLog(@"[Relocate] 捕获右侧目标: %@ (WinMidX=%.1f)", NSStringFromClass([element class]), winMidX);
     
-    // 1. 容器冒泡：若该视图处于一个靠右的小容器中，上溯找到该容器
-    UIView *targetToMove = view;
-    while (targetToMove.superview &&
-           targetToMove.superview.bounds.size.width > 0 &&
-           targetToMove.superview.bounds.size.width < screenWidth * 0.6) {
-        targetToMove = targetToMove.superview;
+    // 容器冒泡：若该元素被包含在靠右侧的小容器中（宽度小于屏幕 65%），移动最顶层小容器
+    UIView *viewToMove = element;
+    while (viewToMove.superview &&
+           viewToMove.superview != window &&
+           viewToMove.superview.bounds.size.width > 0 &&
+           viewToMove.superview.bounds.size.width < screenWidth * 0.65) {
+        viewToMove = viewToMove.superview;
     }
     
-    UIView *parent = targetToMove.superview ?: superview;
-    CGFloat parentWidth = parent.bounds.size.width > 0 ? parent.bounds.size.width : screenWidth;
+    UIView *parent = viewToMove.superview ?: superview;
     
-    // 2. 停用 Trailing 约束并添加 Leading 约束
+    // 处理 Auto Layout 约束：移除 Trailing / Right 约束，添加 Leading 约束
     NSMutableArray<NSLayoutConstraint *> *trailingConstraints = [NSMutableArray array];
     for (NSLayoutConstraint *c in parent.constraints) {
-        if (c.firstItem == targetToMove || c.secondItem == targetToMove) {
+        if (c.firstItem == viewToMove || c.secondItem == viewToMove) {
             if (c.firstAttribute == NSLayoutAttributeTrailing ||
                 c.firstAttribute == NSLayoutAttributeRight ||
                 c.secondAttribute == NSLayoutAttributeTrailing ||
@@ -169,137 +255,178 @@ static void forceRelocateToLeft(UIView *view) {
         }
     }
     if (trailingConstraints.count > 0) {
-        CBS_LOG(@"[Relocate] 停用 %lu 条 Trailing 约束，替换为 Leading", (unsigned long)trailingConstraints.count);
         [NSLayoutConstraint deactivateConstraints:trailingConstraints];
-        NSLayoutConstraint *leading = [targetToMove.leadingAnchor constraintEqualToAnchor:parent.safeAreaLayoutGuide.leadingAnchor constant:16.0];
+        NSLayoutConstraint *leading = [viewToMove.leadingAnchor constraintEqualToAnchor:parent.safeAreaLayoutGuide.leadingAnchor constant:16.0];
         leading.priority = UILayoutPriorityRequired;
         leading.active = YES;
         [parent setNeedsLayout];
     }
     
-    // 3. 手动调整 Frame / Center
-    CGPoint center = targetToMove.center;
-    if (center.x > parentWidth / 2.0) {
-        CGFloat distFromRight = parentWidth - center.x;
-        CGFloat halfW = targetToMove.bounds.size.width > 0 ? (targetToMove.bounds.size.width / 2.0) : 22.0;
-        if (distFromRight < halfW + 8.0) {
-            distFromRight = halfW + 16.0;
-        }
-        center.x = distFromRight;
-        targetToMove.center = center;
-    }
+    // 手动调整 frame 与 center
+    viewToMove.frame = computeLeftFrame(viewToMove, viewToMove.frame);
+    viewToMove.center = computeLeftCenter(viewToMove, viewToMove.center);
     
-    // 4. 微距按钮避让
-    for (UIView *sibling in parent.subviews) {
-        if (isMacroAffordance(sibling) && !sibling.hidden && sibling.alpha > 0.05) {
-            if (sibling.center.x < parentWidth / 2.0) {
-                CGFloat macroHalfH = sibling.bounds.size.height / 2.0;
-                CGFloat myHalfH = targetToMove.bounds.size.height / 2.0;
-                if (fabs(center.x - sibling.center.x) < 55.0 && fabs(center.y - sibling.center.y) < (macroHalfH + myHalfH + 10.0)) {
-                    center.y = sibling.center.y - (macroHalfH + myHalfH + 12.0);
-                    targetToMove.center = center;
-                }
-            }
-            break;
-        }
-    }
-    
-    // 5. Transform 物理强制平移兜底 (彻底解决 Auto Layout 强行在视觉上保持右侧)
-    CGRect curWinRect = window ? [targetToMove.superview convertRect:targetToMove.frame toView:window] : targetToMove.frame;
-    if (CGRectGetMidX(curWinRect) > screenWidth / 2.0) {
-        CGFloat curX = CGRectGetMidX(curWinRect);
-        CGFloat targetLeftX = 40.0;
-        CGFloat dx = targetLeftX - curX; // 负值，强制向左拉
-        targetToMove.transform = CGAffineTransformMakeTranslation(dx, 0);
-        CBS_LOG(@"[Relocate] 强制激活 CGAffineTransform dx=%.1f", dx);
+    // CGAffineTransform 物理平移兜底 (防止被系统未公开布局周期强制回弹)
+    CGRect currentWinRect = window ? [viewToMove.superview convertRect:viewToMove.frame toView:window] : viewToMove.frame;
+    if (CGRectGetMidX(currentWinRect) > screenWidth / 2.0) {
+        CGFloat currentX = CGRectGetMidX(currentWinRect);
+        CGFloat targetX = 40.0;
+        CGFloat deltaX = targetX - currentX;
+        viewToMove.transform = CGAffineTransformMakeTranslation(deltaX, 0);
+        writeCBSLog(@"[Relocate] 激活 CGAffineTransform 强制平移 deltaX=%.1f", deltaX);
     }
 }
 
-// 递归遍历视图树
-static void recursiveScanAndRelocate(UIView *root) {
+// 递归扫描整棵视图树
+static void scanAndRelocateHierarchy(UIView *root) {
     if (!root) return;
     
-    if (isLiveTextAffordance(root)) {
-        forceRelocateToLeft(root);
+    if (isLiveTextElement(root)) {
+        relocateLiveTextToLeft(root);
         return;
     }
     
     for (UIView *sub in root.subviews) {
-        recursiveScanAndRelocate(sub);
+        scanAndRelocateHierarchy(sub);
     }
 }
 
 // ============================================================================
-// 启动 Toast 提示 (让用户直观看到插件已成功加载)
+// 可视化注入 HUD 提示
 // ============================================================================
 
-static void showLoadedToastIfNeeded(UIViewController *vc) {
+static void showGlobalInjectionToast(void) {
     static BOOL shown = NO;
-    if (shown || !vc || !vc.view) return;
-    shown = YES;
+    if (shown) return;
     
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        UILabel *toast = [[UILabel alloc] init];
-        toast.text = @" ⚡️ CameraButtonSwap 已注入 (左撇子模式) ";
-        toast.textColor = [UIColor whiteColor];
-        toast.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.8];
-        toast.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
-        toast.textAlignment = NSTextAlignmentCenter;
-        toast.layer.cornerRadius = 14.0;
-        toast.clipsToBounds = YES;
-        [toast sizeToFit];
-        
-        CGRect frame = toast.frame;
-        frame.size.width += 24.0;
-        frame.size.height = 28.0;
-        frame.origin.x = (vc.view.bounds.size.width - frame.size.width) / 2.0;
-        frame.origin.y = 54.0;
-        toast.frame = frame;
-        toast.alpha = 0.0;
-        [vc.view addSubview:toast];
-        
-        [UIView animateWithDuration:0.3 animations:^{
-            toast.alpha = 1.0;
-        } completion:^(BOOL finished) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                [UIView animateWithDuration:0.5 animations:^{
-                    toast.alpha = 0.0;
-                } completion:^(BOOL fin) {
-                    [toast removeFromSuperview];
-                }];
-            });
-        }];
-    });
-}
-
-// ============================================================================
-// Hooks
-// ============================================================================
-
-%hook CAMViewfinderViewController
-
-- (void)viewDidAppear:(BOOL)animated {
-    %orig;
-    showLoadedToastIfNeeded((UIViewController *)self);
-}
-
-- (void)viewDidLayoutSubviews {
-    %orig;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIView *v = [(UIViewController *)self view];
-        if (v) {
-            recursiveScanAndRelocate(v);
+    UIWindow *targetWindow = nil;
+    if (@available(iOS 15.0, *)) {
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if ([scene isKindOfClass:[UIWindowScene class]]) {
+                for (UIWindow *w in [(UIWindowScene *)scene windows]) {
+                    if (w.isKeyWindow || [NSStringFromClass([w class]) containsString:@"Camera"]) {
+                        targetWindow = w;
+                        break;
+                    }
+                }
+            }
+            if (targetWindow) break;
         }
-    });
+    }
+    if (!targetWindow) {
+        targetWindow = [UIApplication sharedApplication].keyWindow ?: [UIApplication sharedApplication].windows.firstObject;
+    }
+    if (!targetWindow) return;
+    
+    shown = YES;
+    writeCBSLog(@"[Toast] 成功挂载 HUD 到窗口: %@", NSStringFromClass([targetWindow class]));
+    
+    UILabel *toast = [[UILabel alloc] init];
+    toast.text = @" ⚡️ CameraButtonSwap 已注入 (iOS 17 适配版) ";
+    toast.textColor = [UIColor whiteColor];
+    toast.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
+    toast.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightMedium];
+    toast.textAlignment = NSTextAlignmentCenter;
+    toast.layer.cornerRadius = 14.0;
+    toast.clipsToBounds = YES;
+    toast.layer.borderColor = [[UIColor systemYellowColor] colorWithAlphaComponent:0.8].CGColor;
+    toast.layer.borderWidth = 1.0;
+    [toast sizeToFit];
+    
+    CGRect frame = toast.frame;
+    frame.size.width += 24.0;
+    frame.size.height = 28.0;
+    frame.origin.x = (targetWindow.bounds.size.width - frame.size.width) / 2.0;
+    frame.origin.y = 56.0;
+    toast.frame = frame;
+    toast.alpha = 0.0;
+    [targetWindow addSubview:toast];
+    [targetWindow bringSubviewToFront:toast];
+    
+    [UIView animateWithDuration:0.3 animations:^{
+        toast.alpha = 1.0;
+    } completion:^(BOOL finished) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [UIView animateWithDuration:0.4 animations:^{
+                toast.alpha = 0.0;
+            } completion:^(BOOL fin) {
+                [toast removeFromSuperview];
+            }];
+        });
+    }];
+}
+
+// ============================================================================
+// 精准类级 Hooks (setFrame & setCenter 拦截)
+// ============================================================================
+
+%hook CAMImageAnalysisButton
+
+- (void)setFrame:(CGRect)frame {
+    %orig(computeLeftFrame((UIView *)self, frame));
+}
+
+- (void)setCenter:(CGPoint)center {
+    %orig(computeLeftCenter((UIView *)self, center));
 }
 
 %end
+
+%hook VKImageAnalysisButton
+
+- (void)setFrame:(CGRect)frame {
+    %orig(computeLeftFrame((UIView *)self, frame));
+}
+
+- (void)setCenter:(CGPoint)center {
+    %orig(computeLeftCenter((UIView *)self, center));
+}
+
+%end
+
+%hook VKCCornerLookupButton
+
+- (void)setFrame:(CGRect)frame {
+    %orig(computeLeftFrame((UIView *)self, frame));
+}
+
+- (void)setCenter:(CGPoint)center {
+    %orig(computeLeftCenter((UIView *)self, center));
+}
+
+%end
+
+// 安全获取对象 ivar
+static UIView *getIvarView(id obj, const char *ivarName) {
+    if (!obj) return nil;
+    Ivar iv = class_getInstanceVariable(object_getClass(obj), ivarName);
+    if (iv) {
+        return object_getIvar(obj, iv);
+    }
+    return nil;
+}
+
+// ============================================================================
+// 宿主容器布局 Hooks (CAMFullscreenViewfinder & CAMBottomBar)
+// ============================================================================
 
 %hook CAMFullscreenViewfinder
 
 - (void)layoutSubviews {
     %orig;
-    recursiveScanAndRelocate((UIView *)self);
+    
+    UIView *btn = nil;
+    @try { btn = [self valueForKey:@"imageAnalysisButton"]; } @catch (id e) {}
+    if (!btn) {
+        btn = getIvarView(self, "_imageAnalysisButton");
+    }
+    
+    if (btn && !btn.hidden && btn.alpha > 0.01) {
+        btn.frame = computeLeftFrame(btn, btn.frame);
+        btn.center = computeLeftCenter(btn, btn.center);
+    }
+    
+    scanAndRelocateHierarchy((UIView *)self);
 }
 
 %end
@@ -308,37 +435,101 @@ static void showLoadedToastIfNeeded(UIViewController *vc) {
 
 - (void)layoutSubviews {
     %orig;
-    recursiveScanAndRelocate((UIView *)self);
+    
+    UIView *btn = nil;
+    @try { btn = [self valueForKey:@"imageAnalysisButton"]; } @catch (id e) {}
+    if (!btn) {
+        btn = getIvarView(self, "_imageAnalysisButton");
+    }
+    
+    if (btn && !btn.hidden && btn.alpha > 0.01) {
+        btn.frame = computeLeftFrame(btn, btn.frame);
+        btn.center = computeLeftCenter(btn, btn.center);
+    }
+    
+    scanAndRelocateHierarchy((UIView *)self);
 }
 
 %end
 
 // ============================================================================
-// 构造函数
+// 控制器生命周期与动态视图 Hook
+// ============================================================================
+
+%hook UIViewController
+
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    NSString *clsName = NSStringFromClass([self class]);
+    if ([clsName containsString:@"Camera"] || [clsName containsString:@"Viewfinder"] || [clsName hasPrefix:@"CAM"]) {
+        showGlobalInjectionToast();
+        
+        // 启动高频看门狗定时器（每 0.25 秒扫描一次）
+        static NSTimer *watchdogTimer = nil;
+        if (!watchdogTimer) {
+            __weak UIViewController *weakSelf = self;
+            watchdogTimer = [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer * _Nonnull timer) {
+                UIViewController *strongSelf = weakSelf;
+                if (strongSelf && strongSelf.view) {
+                    scanAndRelocateHierarchy(strongSelf.view);
+                }
+            }];
+        }
+    }
+}
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    NSString *clsName = NSStringFromClass([self class]);
+    if ([clsName containsString:@"Camera"] || [clsName containsString:@"Viewfinder"] || [clsName hasPrefix:@"CAM"]) {
+        UIView *v = [(UIViewController *)self view];
+        if (v) {
+            scanAndRelocateHierarchy(v);
+        }
+    }
+}
+
+%end
+
+%hook UIView
+
+- (void)didAddSubview:(UIView *)subview {
+    %orig;
+    if (isLiveTextElement(subview)) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            relocateLiveTextToLeft(subview);
+        });
+    }
+}
+
+%end
+
+// ============================================================================
+// 构造函数与动态框架加载
 // ============================================================================
 
 %ctor {
     @autoreleasepool {
         NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
-        CBS_LOG(@"========================================");
-        CBS_LOG(@"[Tweak ctor] 进程启动: %@", bundleID);
+        writeCBSLog(@"[Ctor] 插件加载成功, Bundle: %@", bundleID);
         
         // 预加载相关系统框架
-        NSArray<NSString *> *frameworks = @[
-            @"/System/Library/PrivateFrameworks/CameraUI.framework",
-            @"/System/Library/Frameworks/VisionKit.framework",
-            @"/System/Library/PrivateFrameworks/VisionKitCore.framework"
-        ];
-        for (NSString *fw in frameworks) {
-            NSBundle *b = [NSBundle bundleWithPath:fw];
-            if (b) {
-                BOOL ok = [b load];
-                CBS_LOG(@"加载框架 %@ -> %d", [fw lastPathComponent], ok);
-            }
-        }
+        dlopen("/System/Library/PrivateFrameworks/CameraUI.framework/CameraUI", RTLD_NOW);
+        dlopen("/System/Library/PrivateFrameworks/VisionKitCore.framework/VisionKitCore", RTLD_NOW);
+        dlopen("/System/Library/Frameworks/VisionKit.framework/VisionKit", RTLD_NOW);
         
         %init;
-        CBS_LOG(@"[Tweak ctor] Hooks 注册完成");
-        CBS_LOG(@"========================================");
+        writeCBSLog(@"[Ctor] Hooks 注册完毕");
+        
+        // 监听应用唤醒事件，弹出提示并初始化
+        [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
+                                                          object:nil
+                                                           queue:[NSOperationQueue mainQueue]
+                                                      usingBlock:^(NSNotification * _Nonnull note) {
+            writeCBSLog(@"[App] UIApplicationDidBecomeActiveNotification 触发");
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                showGlobalInjectionToast();
+            });
+        }];
     }
 }
