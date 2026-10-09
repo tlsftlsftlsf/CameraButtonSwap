@@ -1,10 +1,10 @@
 Package: com.yourname.camerabuttonswap
 Name: CameraButtonSwap
-Version: 2.2.0
+Version: 2.3.0
 Architecture: iphoneos-arm64
-Description: 相机「扫描文本」按钮移动到左侧（iOS 17 Dopamine 双路径强力注入版，TweakInject+Substrate双适配）
+Description: 相机「扫描文本」按钮移动到左侧（iOS 17 Dopamine 原生免Substrate纯净版，零外部依赖，修复安装报错）
 Maintainer: Your Name <your@email.com>
 Author: Your Name <your@email.com>
 Section: Tweaks
 Tag: role::hacker, purpose::extension
-Depends: mobilesubstrate (>= 0.9.5000) | ellekit, firmware (>= 15.0)
+Depends: firmware (>= 15.0)

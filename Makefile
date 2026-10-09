@@ -14,6 +14,9 @@ TWEAK_NAME = CameraButtonSwap
 # 源文件
 CameraButtonSwap_FILES = Tweak.x
 
+# 使用 internal 生成器：生成纯原生 Objective-C runtime hook 代码，彻底摆脱 CydiaSubstrate 依赖！
+CameraButtonSwap_LOGOS_DEFAULT_GENERATOR = internal
+
 # 编译选项与框架
 CameraButtonSwap_CFLAGS = -fobjc-arc -Wno-unused-function -Wno-deprecated-declarations -Wno-incompatible-pointer-types
 CameraButtonSwap_FRAMEWORKS = UIKit Foundation AudioToolbox
@@ -27,7 +30,3 @@ include $(THEOS_MAKE_PATH)/tweak.mk
 
 # 告知 Sileo：安装后需要重启这些进程并注销 SpringBoard
 INSTALL_TARGET_PROCESSES = Camera SpringBoard
-
-after-stage::
-	mkdir -p $(THEOS_STAGING_DIR)/usr/lib/TweakInject
-	cp -f $(THEOS_STAGING_DIR)/Library/MobileSubstrate/DynamicLibraries/CameraButtonSwap.* $(THEOS_STAGING_DIR)/usr/lib/TweakInject/

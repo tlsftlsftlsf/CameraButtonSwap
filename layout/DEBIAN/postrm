@@ -1,7 +1,3 @@
 #!/bin/sh
-rm -f /var/jb/usr/lib/TweakInject/CameraButtonSwap.dylib
-rm -f /var/jb/usr/lib/TweakInject/CameraButtonSwap.plist
-rm -f /var/jb/Library/MobileSubstrate/DynamicLibraries/CameraButtonSwap.dylib
-rm -f /var/jb/Library/MobileSubstrate/DynamicLibraries/CameraButtonSwap.plist
 killall -9 Camera 2>/dev/null
 exit 0

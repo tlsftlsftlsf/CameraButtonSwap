@@ -1,33 +1,8 @@
 #!/bin/sh
-# 1. 确保在 /var/jb/usr/lib/TweakInject/ 和 /var/jb/Library/MobileSubstrate/DynamicLibraries/ 两处都存在！
-mkdir -p /var/jb/usr/lib/TweakInject 2>/dev/null
-mkdir -p /var/jb/Library/MobileSubstrate/DynamicLibraries 2>/dev/null
-
-# 保证两处都有文件
-if [ -f /var/jb/Library/MobileSubstrate/DynamicLibraries/CameraButtonSwap.dylib ]; then
-    cp -f /var/jb/Library/MobileSubstrate/DynamicLibraries/CameraButtonSwap.dylib /var/jb/usr/lib/TweakInject/ 2>/dev/null
-    cp -f /var/jb/Library/MobileSubstrate/DynamicLibraries/CameraButtonSwap.plist /var/jb/usr/lib/TweakInject/ 2>/dev/null
-fi
-
-chmod 755 /var/jb/usr/lib/TweakInject/CameraButtonSwap.dylib 2>/dev/null
-chmod 644 /var/jb/usr/lib/TweakInject/CameraButtonSwap.plist 2>/dev/null
-chmod 755 /var/jb/Library/MobileSubstrate/DynamicLibraries/CameraButtonSwap.dylib 2>/dev/null
-chmod 644 /var/jb/Library/MobileSubstrate/DynamicLibraries/CameraButtonSwap.plist 2>/dev/null
-
-# 2. 补全 CydiaSubstrate.framework 软链接（防止因缺少软链接导致 dlopen 报 Library not loaded）
-if [ ! -e /var/jb/Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate ]; then
-    mkdir -p /var/jb/Library/Frameworks/CydiaSubstrate.framework 2>/dev/null
-    if [ -f /var/jb/usr/lib/libellekit.dylib ]; then
-        ln -sf /var/jb/usr/lib/libellekit.dylib /var/jb/Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate 2>/dev/null
-    elif [ -f /var/jb/usr/lib/libsubstrate.dylib ]; then
-        ln -sf /var/jb/usr/lib/libsubstrate.dylib /var/jb/Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate 2>/dev/null
-    fi
-fi
-
-# 3. 杀掉相机进程
+# 杀掉相机进程
 killall -9 Camera 2>/dev/null
 
-# 4. 触发 SpringBoard 注销
+# 触发 SpringBoard 注销
 if which sbreload >/dev/null 2>&1; then
     sbreload 2>/dev/null &
 else
