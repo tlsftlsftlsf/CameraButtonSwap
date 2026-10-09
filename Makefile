@@ -18,7 +18,7 @@ TWEAK_NAME = CameraButtonSwap
 CameraButtonSwap_FILES = Tweak.x
 
 # 编译选项
-CameraButtonSwap_CFLAGS = -fobjc-arc -Wno-unused-function
+CameraButtonSwap_CFLAGS = -fobjc-arc -Wno-unused-function -Wno-deprecated-declarations -Wno-incompatible-pointer-types
 CameraButtonSwap_FRAMEWORKS = UIKit Foundation
 
 # 链接 CameraUI 私有框架（运行时动态加载，不需要编译时链接）

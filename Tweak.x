@@ -1,379 +1,351 @@
 /*
- * CameraButtonSwap - iOS 15.0 ~ 17.x 越狱插件 (支持无根越狱 Rootless)
+ * CameraButtonSwap - iOS 17 专门适配版 (兼容 iOS 15 ~ 17.x)
  * 功能：将系统相机 App 中的「扫描文本 / 实况文本」按钮移动到左侧，方便左撇子单手操作。
- * 
- * 兼容性：
- *   - iOS 15.x: 核心类 CAMImageAnalysisButton (CameraUI.framework)
- *   - iOS 16.x ~ 17.x: 核心类 CAMImageAnalysisButton / VKImageAnalysisButton (VisionKit.framework)
- *   - 自动避让微距按钮 (CAMAutoMacroButton)
+ *
+ * iOS 17 深度适配要点：
+ *   1. 覆盖 iOS 17 最新 VisionKitCore 真实类名：
+ *      - VKCImageAnalysisButton
+ *      - VKCCornerLookupButton
+ *      - VKCActionInfoView / VKCActionInfoContainer
+ *      - CAMImageAnalysisButton (CameraUI)
+ *   2. Auto Layout 约束反转机制：
+ *      - iOS 17 按钮采用 Auto Layout 强约束定位在 Trailing (右侧)
+ *      - 仅修改 frame/center 会被系统布局引擎重置；本插件自动禁用 Trailing 约束并激活 Leading (左侧) 约束
+ *   3. 容器冒泡检测：
+ *      - 若按钮被包裹在右下角的小容器中，自动上溯找到顶级右侧容器并将其整体移至左侧
+ *   4. 微距按钮智能避让：
+ *      - 保持与左下角微距花朵按钮纵向间距，防止重叠
  */
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
-#define CBS_LOG(fmt, ...) NSLog(@"[CameraButtonSwap] " fmt, ##__VA_ARGS__)
+#define CBS_LOG(fmt, ...) NSLog(@"[CameraButtonSwap-iOS17] " fmt, ##__VA_ARGS__)
 
 // ============================================================================
-// 前向声明私有类
+// 辅助判断函数：识别是否是实况文本/扫描按钮或其容器
 // ============================================================================
 
-@interface CAMAutoMacroButton : UIControl
-@end
-
-@interface CAMImageAnalysisButton : UIControl
-@end
-
-@interface VKImageAnalysisButton : UIControl
-@end
-
-@interface CAMFullscreenViewfinder : UIView
-@property(nonatomic, readonly) CAMAutoMacroButton *autoMacroButton;
-@property(nonatomic, readonly) UIView *imageAnalysisButton;
-@end
-
-@interface CAMBottomBar : UIView
-@end
-
-@interface CAMViewfinderViewController : UIViewController
-@end
-
-// ============================================================================
-// 辅助判定函数 (多版本兼容)
-// ============================================================================
-
-static BOOL isImageAnalysisButtonClass(UIView *view) {
-    if (!view) return NO;
-    NSString *cls = NSStringFromClass([view class]);
-    if ([cls containsString:@"ImageAnalysisButton"]) return YES;
-    if ([cls containsString:@"LiveText"]) return YES;
+static BOOL isLiveTextClass(Class cls) {
+    if (!cls) return NO;
+    const char *name = class_getName(cls);
+    if (!name) return NO;
+    
+    // 匹配 iOS 15/16/17 所有已知及潜在相关类名
+    if (strstr(name, "ImageAnalysisButton") != NULL) return YES;
+    if (strstr(name, "CornerLookupButton") != NULL) return YES;
+    if (strstr(name, "ActionInfoView") != NULL) return YES;
+    if (strstr(name, "ActionInfoContainer") != NULL) return YES;
+    if (strstr(name, "LiveText") != NULL) return YES;
+    if (strstr(name, "ScanText") != NULL) return YES;
+    if (strstr(name, "TextRecognition") != NULL) return YES;
+    
     return NO;
 }
 
-static BOOL isMacroButtonClass(UIView *view) {
+static BOOL isLiveTextView(UIView *view) {
     if (!view) return NO;
-    NSString *cls = NSStringFromClass([view class]);
-    if ([cls containsString:@"AutoMacroButton"]) return YES;
-    if ([cls containsString:@"MacroButton"]) return YES;
-    if ([cls containsString:@"MacroControl"]) return YES;
-    return NO;
-}
-
-// ============================================================================
-// 核心定位函数：将文本扫描按钮移动到屏幕左侧（并自动避让微距按钮）
-// ============================================================================
-
-static void adjustButtonToLeftSide(UIView *button, UIView *container) {
-    if (!button) return;
     
-    UIView *superview = container ?: button.superview;
-    if (!superview) return;
+    // 1. 类名匹配
+    if (isLiveTextClass([view class])) return YES;
     
-    CGFloat superWidth = superview.bounds.size.width;
-    if (superWidth <= 0 || superWidth > 2000.0) {
-        superWidth = [UIScreen mainScreen].bounds.size.width;
+    // 2. accessibilityIdentifier 匹配
+    NSString *aid = view.accessibilityIdentifier;
+    if (aid) {
+        NSString *lower = [aid lowercaseString];
+        if ([lower containsString:@"image-analysis"] ||
+            [lower containsString:@"corner-lookup"] ||
+            [lower containsString:@"livetext"] ||
+            [lower containsString:@"live-text"] ||
+            [lower containsString:@"scantext"] ||
+            [lower containsString:@"scan-text"]) {
+            return YES;
+        }
     }
     
-    CGPoint currentCenter = button.center;
-    CGSize buttonSize = button.bounds.size;
-    CGFloat halfW = (buttonSize.width > 0) ? (buttonSize.width / 2.0) : 22.0;
-    CGFloat halfH = (buttonSize.height > 0) ? (buttonSize.height / 2.0) : 22.0;
+    // 3. accessibilityLabel 匹配
+    NSString *label = view.accessibilityLabel;
+    if (label) {
+        if ([label containsString:@"文本"] ||
+            [label containsString:@"实况"] ||
+            [label containsString:@"扫描"] ||
+            [label localizedCaseInsensitiveContainsString:@"live text"] ||
+            [label localizedCaseInsensitiveContainsString:@"scan text"]) {
+            return YES;
+        }
+    }
     
-    // 如果按钮在右半屏，镜像计算左侧对应位置
-    if (currentCenter.x > superWidth / 2.0) {
-        CGFloat distFromRight = superWidth - currentCenter.x;
+    return NO;
+}
+
+static BOOL isMacroButton(UIView *view) {
+    if (!view) return NO;
+    const char *name = class_getName([view class]);
+    if (name) {
+        if (strstr(name, "AutoMacroButton") != NULL) return YES;
+        if (strstr(name, "MacroButton") != NULL) return YES;
+        if (strstr(name, "MacroControl") != NULL) return YES;
+    }
+    return NO;
+}
+
+// ============================================================================
+// 核心定位引擎：将目标视图（或其父级右侧容器）移动到屏幕左侧
+// ============================================================================
+
+static void relocateViewToLeft(UIView *targetView) {
+    if (!targetView) return;
+    
+    UIView *superview = targetView.superview;
+    if (!superview) return;
+    
+    CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
+    if (screenWidth <= 0 || screenWidth > 2000.0) screenWidth = 390.0;
+    
+    // 获取在屏幕全局坐标系下的中心点
+    UIWindow *window = targetView.window ?: superview.window;
+    CGFloat midX = 0;
+    if (window) {
+        CGRect windowRect = [superview convertRect:targetView.frame toView:window];
+        midX = CGRectGetMidX(windowRect);
+    } else {
+        midX = CGRectGetMidX(targetView.frame);
+    }
+    
+    // 如果已经在屏幕左半边，无需重复调整
+    if (midX > 0 && midX < screenWidth / 2.0) {
+        return;
+    }
+    
+    CBS_LOG(@"正在将 %@ 移动至屏幕左侧 (当前 Window X=%.1f)",
+            NSStringFromClass([targetView class]), midX);
+    
+    // 1. 容器冒泡：如果当前视图被包裹在一个自身就靠右的小容器中，需要移动该外层容器
+    UIView *viewToMove = targetView;
+    while (viewToMove.superview &&
+           viewToMove.superview.bounds.size.width > 0 &&
+           viewToMove.superview.bounds.size.width < screenWidth * 0.65) {
+        viewToMove = viewToMove.superview;
+    }
+    
+    UIView *parent = viewToMove.superview;
+    if (!parent) return;
+    
+    // 2. iOS 17 Auto Layout 约束处理：
+    // 禁用所有 Trailing/Right 约束，替换为 Leading/Left 约束
+    NSMutableArray<NSLayoutConstraint *> *trailingConstraints = [NSMutableArray array];
+    for (NSLayoutConstraint *c in parent.constraints) {
+        if (c.firstItem == viewToMove || c.secondItem == viewToMove) {
+            if (c.firstAttribute == NSLayoutAttributeTrailing ||
+                c.firstAttribute == NSLayoutAttributeRight ||
+                c.secondAttribute == NSLayoutAttributeTrailing ||
+                c.secondAttribute == NSLayoutAttributeRight) {
+                [trailingConstraints addObject:c];
+            }
+        }
+    }
+    for (NSLayoutConstraint *c in viewToMove.constraints) {
+        if (c.firstAttribute == NSLayoutAttributeTrailing ||
+            c.firstAttribute == NSLayoutAttributeRight) {
+            [trailingConstraints addObject:c];
+        }
+    }
+    
+    if (trailingConstraints.count > 0) {
+        CBS_LOG(@"检测到 %lu 条 Trailing 约束，正在替换为 Leading 约束", (unsigned long)trailingConstraints.count);
+        [NSLayoutConstraint deactivateConstraints:trailingConstraints];
+        
+        NSLayoutConstraint *leading = [viewToMove.leadingAnchor constraintEqualToAnchor:parent.safeAreaLayoutGuide.leadingAnchor constant:16.0];
+        leading.priority = UILayoutPriorityRequired;
+        leading.active = YES;
+        
+        [parent setNeedsLayout];
+        [parent layoutIfNeeded];
+    }
+    
+    // 3. 手动 frame / center 调整（针对非 AutoLayout 或混合布局兜底）
+    CGFloat parentWidth = parent.bounds.size.width;
+    if (parentWidth <= 0 || parentWidth > 2000.0) parentWidth = screenWidth;
+    
+    CGPoint center = viewToMove.center;
+    if (center.x > parentWidth / 2.0) {
+        CGFloat distFromRight = parentWidth - center.x;
+        CGFloat halfW = viewToMove.bounds.size.width > 0 ? (viewToMove.bounds.size.width / 2.0) : 22.0;
         if (distFromRight < halfW + 8.0) {
             distFromRight = halfW + 16.0;
         }
-        currentCenter.x = distFromRight;
-    } else {
-        // 如果已在左侧，确保至少有 16pt 舒适边距
-        if (currentCenter.x < halfW + 8.0) {
-            currentCenter.x = halfW + 16.0;
-        }
+        center.x = distFromRight;
     }
     
-    // 检查是否有显示的微距按钮（花朵按钮）
+    // 4. 微距按钮智能避让（若左下角有微距花朵按钮，上移避免重叠）
     UIView *macroView = nil;
-    if ([superview respondsToSelector:@selector(autoMacroButton)]) {
-        macroView = [superview performSelector:@selector(autoMacroButton)];
-    }
-    if (!macroView) {
-        for (UIView *sub in superview.subviews) {
-            if (isMacroButtonClass(sub)) {
-                macroView = sub;
-                break;
-            }
+    for (UIView *sibling in parent.subviews) {
+        if (isMacroButton(sibling) && !sibling.hidden && sibling.alpha > 0.05) {
+            macroView = sibling;
+            break;
         }
     }
-    
-    if (macroView && !macroView.hidden && macroView.alpha > 0.05) {
+    if (macroView) {
         CGFloat macroX = macroView.center.x;
         CGFloat macroY = macroView.center.y;
-        CGFloat macroHalfH = (macroView.bounds.size.height > 0) ? (macroView.bounds.size.height / 2.0) : 22.0;
+        CGFloat macroHalfH = macroView.bounds.size.height > 0 ? (macroView.bounds.size.height / 2.0) : 22.0;
+        CGFloat myHalfH = viewToMove.bounds.size.height > 0 ? (viewToMove.bounds.size.height / 2.0) : 22.0;
         
-        // 微距按钮在左侧
-        if (macroX < superWidth / 2.0) {
-            // 如果两者中心距离太近（发生重叠）
-            if (fabs(currentCenter.x - macroX) < 50.0 && fabs(currentCenter.y - macroY) < (macroHalfH + halfH + 8.0)) {
-                // 移动到微距按钮正上方，保留 12pt 间距
-                currentCenter.y = macroY - (macroHalfH + halfH + 12.0);
+        if (macroX < parentWidth / 2.0) {
+            if (fabs(center.x - macroX) < 55.0 && fabs(center.y - macroY) < (macroHalfH + myHalfH + 10.0)) {
+                center.y = macroY - (macroHalfH + myHalfH + 12.0);
             }
         }
     }
     
-    // 应用新位置
-    button.center = currentCenter;
+    viewToMove.center = center;
 }
 
-// 递归查找文本识别按钮 (兼容 iOS 15 / 16 / 17)
-static UIView *findImageAnalysisButtonRecursive(UIView *root) {
-    if (!root) return nil;
-    if (isImageAnalysisButtonClass(root)) {
-        return root;
+// 递归查找整个视图树中的实况文本元素
+static void findAndRelocateAllLiveTextViews(UIView *root) {
+    if (!root) return;
+    
+    if (isLiveTextView(root)) {
+        relocateViewToLeft(root);
+        return;
     }
+    
     for (UIView *sub in root.subviews) {
-        UIView *found = findImageAnalysisButtonRecursive(sub);
-        if (found) return found;
+        findAndRelocateAllLiveTextViews(sub);
     }
-    return nil;
 }
 
 // ============================================================================
-// Hook: CAMImageAnalysisButton (iOS 15 / 16 / 17 常见实现)
+// 动态 Hook 宏：同时支持静态类名与运行时未知类
 // ============================================================================
 
-%hook CAMImageAnalysisButton
-
-- (void)setCenter:(CGPoint)center {
-    static BOOL isAdjusting = NO;
-    if (!isAdjusting) {
-        isAdjusting = YES;
-        CGFloat superWidth = self.superview ? self.superview.bounds.size.width : [UIScreen mainScreen].bounds.size.width;
-        if (superWidth > 0 && center.x > superWidth / 2.0) {
-            CGFloat distFromRight = superWidth - center.x;
-            CGFloat halfW = self.bounds.size.width > 0 ? (self.bounds.size.width / 2.0) : 22.0;
-            if (distFromRight < halfW + 8.0) {
-                distFromRight = halfW + 16.0;
+static void hookClassMethodsForRepositioning(Class targetClass) {
+    if (!targetClass) return;
+    
+    CBS_LOG(@"正在为类 %@ 安装动态 Hook", NSStringFromClass(targetClass));
+    
+    // 1. Hook layoutSubviews
+    SEL selLayout = @selector(layoutSubviews);
+    Method mLayout = class_getInstanceMethod(targetClass, selLayout);
+    if (mLayout) {
+        void (*origLayout)(id, SEL) = (void (*)(id, SEL))method_getImplementation(mLayout);
+        IMP newLayout = imp_implementationWithBlock(^(id selfObj) {
+            origLayout(selfObj, selLayout);
+            relocateViewToLeft((UIView *)selfObj);
+        });
+        class_replaceMethod(targetClass, selLayout, newLayout, method_getTypeEncoding(mLayout));
+    }
+    
+    // 2. Hook didMoveToWindow
+    SEL selWindow = @selector(didMoveToWindow);
+    Method mWindow = class_getInstanceMethod(targetClass, selWindow);
+    if (mWindow) {
+        void (*origWindow)(id, SEL) = (void (*)(id, SEL))method_getImplementation(mWindow);
+        IMP newWindow = imp_implementationWithBlock(^(id selfObj) {
+            origWindow(selfObj, selWindow);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                relocateViewToLeft((UIView *)selfObj);
+            });
+        });
+        class_replaceMethod(targetClass, selWindow, newWindow, method_getTypeEncoding(mWindow));
+    }
+    
+    // 3. Hook setHidden:
+    SEL selHidden = @selector(setHidden:);
+    Method mHidden = class_getInstanceMethod(targetClass, selHidden);
+    if (mHidden) {
+        void (*origHidden)(id, SEL, BOOL) = (void (*)(id, SEL, BOOL))method_getImplementation(mHidden);
+        IMP newHidden = imp_implementationWithBlock(^(id selfObj, BOOL hidden) {
+            origHidden(selfObj, selHidden, hidden);
+            if (!hidden) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    relocateViewToLeft((UIView *)selfObj);
+                });
             }
-            center.x = distFromRight;
-        }
-        %orig(center);
-        
-        if (self.superview) {
-            adjustButtonToLeftSide(self, self.superview);
-        }
-        isAdjusting = NO;
-    } else {
-        %orig(center);
+        });
+        class_replaceMethod(targetClass, selHidden, newHidden, method_getTypeEncoding(mHidden));
     }
 }
 
-- (void)setFrame:(CGRect)frame {
-    static BOOL isAdjusting = NO;
-    if (!isAdjusting) {
-        isAdjusting = YES;
-        CGFloat superWidth = self.superview ? self.superview.bounds.size.width : [UIScreen mainScreen].bounds.size.width;
-        if (superWidth > 0 && frame.origin.x > superWidth / 2.0) {
-            CGFloat rightMargin = superWidth - CGRectGetMaxX(frame);
-            if (rightMargin < 8.0 || rightMargin > superWidth / 3.0) {
-                rightMargin = 16.0;
-            }
-            frame.origin.x = rightMargin;
-        }
-        %orig(frame);
-        
-        if (self.superview) {
-            adjustButtonToLeftSide(self, self.superview);
-        }
-        isAdjusting = NO;
-    } else {
-        %orig(frame);
-    }
-}
-
-%end
-
 // ============================================================================
-// Group: iOS16Plus (用于兼容 iOS 16 ~ 17 引入的 VKImageAnalysisButton)
-// ============================================================================
-
-%group iOS16Plus
-
-%hook VKImageAnalysisButton
-
-- (void)setCenter:(CGPoint)center {
-    static BOOL isAdjusting = NO;
-    if (!isAdjusting) {
-        isAdjusting = YES;
-        CGFloat superWidth = self.superview ? self.superview.bounds.size.width : [UIScreen mainScreen].bounds.size.width;
-        if (superWidth > 0 && center.x > superWidth / 2.0) {
-            CGFloat distFromRight = superWidth - center.x;
-            CGFloat halfW = self.bounds.size.width > 0 ? (self.bounds.size.width / 2.0) : 22.0;
-            if (distFromRight < halfW + 8.0) {
-                distFromRight = halfW + 16.0;
-            }
-            center.x = distFromRight;
-        }
-        %orig(center);
-        
-        if (self.superview) {
-            adjustButtonToLeftSide(self, self.superview);
-        }
-        isAdjusting = NO;
-    } else {
-        %orig(center);
-    }
-}
-
-- (void)setFrame:(CGRect)frame {
-    static BOOL isAdjusting = NO;
-    if (!isAdjusting) {
-        isAdjusting = YES;
-        CGFloat superWidth = self.superview ? self.superview.bounds.size.width : [UIScreen mainScreen].bounds.size.width;
-        if (superWidth > 0 && frame.origin.x > superWidth / 2.0) {
-            CGFloat rightMargin = superWidth - CGRectGetMaxX(frame);
-            if (rightMargin < 8.0 || rightMargin > superWidth / 3.0) {
-                rightMargin = 16.0;
-            }
-            frame.origin.x = rightMargin;
-        }
-        %orig(frame);
-        
-        if (self.superview) {
-            adjustButtonToLeftSide(self, self.superview);
-        }
-        isAdjusting = NO;
-    } else {
-        %orig(frame);
-    }
-}
-
-%end
-
-%end
-
-// ============================================================================
-// Hook: CAMFullscreenViewfinder (全屏取景器布局)
-// ============================================================================
-
-%hook CAMFullscreenViewfinder
-
-- (void)layoutSubviews {
-    %orig;
-    
-    UIView *btn = nil;
-    @try {
-        btn = [self valueForKey:@"_imageAnalysisButton"];
-    } @catch (id e) {
-        btn = nil;
-    }
-    
-    if (!btn && [self respondsToSelector:@selector(imageAnalysisButton)]) {
-        btn = [self imageAnalysisButton];
-    }
-    
-    if (!btn) {
-        for (UIView *sub in self.subviews) {
-            if (isImageAnalysisButtonClass(sub)) {
-                btn = sub;
-                break;
-            }
-        }
-    }
-    
-    if (btn) {
-        adjustButtonToLeftSide(btn, self);
-    }
-}
-
-%end
-
-// ============================================================================
-// Hook: CAMBottomBar (底部栏布局)
-// ============================================================================
-
-%hook CAMBottomBar
-
-- (void)layoutSubviews {
-    %orig;
-    
-    UIView *btn = nil;
-    UIView *overlay = nil;
-    @try {
-        btn = [self valueForKey:@"_imageAnalysisButton"];
-    } @catch (id e) {
-        btn = nil;
-    }
-    @try {
-        overlay = [self valueForKey:@"_imageAnalysisButtonBackgroundOverlay"];
-    } @catch (id e) {
-        overlay = nil;
-    }
-    
-    if (!btn) {
-        for (UIView *sub in self.subviews) {
-            if (isImageAnalysisButtonClass(sub)) {
-                btn = sub;
-                break;
-            }
-        }
-    }
-    
-    if (btn) {
-        adjustButtonToLeftSide(btn, self);
-        if (overlay) {
-            overlay.center = btn.center;
-        }
-    }
-}
-
-%end
-
-// ============================================================================
-// Hook: CAMViewfinderViewController (主控制器，兜底保障)
+// Logos Hook: 取景器与视图控制器生命周期拦截 (全局兜底保障)
 // ============================================================================
 
 %hook CAMViewfinderViewController
 
 - (void)viewDidLayoutSubviews {
     %orig;
-    
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIView *root = self.view;
-        if (!root) return;
-        
-        UIView *btn = findImageAnalysisButtonRecursive(root);
-        if (btn) {
-            adjustButtonToLeftSide(btn, btn.superview);
+        UIView *v = [(UIViewController *)self view];
+        if (v) {
+            findAndRelocateAllLiveTextViews(v);
         }
     });
 }
 
 %end
 
+%hook CAMFullscreenViewfinder
+
+- (void)layoutSubviews {
+    %orig;
+    findAndRelocateAllLiveTextViews((UIView *)self);
+}
+
+%end
+
+%hook CAMBottomBar
+
+- (void)layoutSubviews {
+    %orig;
+    findAndRelocateAllLiveTextViews((UIView *)self);
+}
+
+%end
+
 // ============================================================================
-// 构造函数
+// 构造函数：启动时自动扫描并注册所有匹配的类
 // ============================================================================
 
 %ctor {
     @autoreleasepool {
         NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
-        CBS_LOG(@"正在加载... 目标进程: %@", bundleID);
+        CBS_LOG(@"====== 插件加载 ======");
+        CBS_LOG(@"当前注入进程: %@", bundleID);
         
-        // 动态加载 CameraUI 与 VisionKit 相关框架
-        [[NSBundle bundleWithPath:@"/System/Library/PrivateFrameworks/CameraUI.framework"] load];
-        [[NSBundle bundleWithPath:@"/System/Library/Frameworks/VisionKit.framework"] load];
-        [[NSBundle bundleWithPath:@"/System/Library/PrivateFrameworks/VisionKitCore.framework"] load];
+        // 强制预加载相关框架
+        NSArray<NSString *> *frameworkPaths = @[
+            @"/System/Library/PrivateFrameworks/CameraUI.framework",
+            @"/System/Library/Frameworks/VisionKit.framework",
+            @"/System/Library/PrivateFrameworks/VisionKitCore.framework"
+        ];
         
-        // 初始化全局 Hooks (CAMImageAnalysisButton, Viewfinder 等)
-        %init(_ungrouped);
-        
-        // 如果运行时检测到 iOS 16/17 引入的 VKImageAnalysisButton，动态注册对应 Hook
-        if (objc_getClass("VKImageAnalysisButton")) {
-            CBS_LOG(@"检测到 VKImageAnalysisButton，注册 iOS16Plus Hook 组");
-            %init(iOS16Plus);
+        for (NSString *path in frameworkPaths) {
+            NSBundle *b = [NSBundle bundleWithPath:path];
+            if (b) {
+                BOOL ok = [b load];
+                CBS_LOG(@"加载框架 %@ -> %d", [path lastPathComponent], ok);
+            }
         }
         
-        CBS_LOG(@"✅ 插件初始化完毕 (已启用 iOS 15 ~ 17 跨版本兼容)");
+        // 初始化 Logos 声明的 Hooks
+        %init;
+        
+        // 运行时扫描：自动匹配所有带有 ImageAnalysis / CornerLookup / ActionInfo 特征的类
+        int numClasses = objc_getClassList(NULL, 0);
+        if (numClasses > 0) {
+            Class *classes = (Class *)malloc(sizeof(Class) * numClasses);
+            numClasses = objc_getClassList(classes, numClasses);
+            
+            for (int i = 0; i < numClasses; i++) {
+                Class c = classes[i];
+                if (isLiveTextClass(c) && [c isSubclassOfClass:[UIView class]]) {
+                    hookClassMethodsForRepositioning(c);
+                }
+            }
+            free(classes);
+        }
+        
+        CBS_LOG(@"====== 插件初始化成功 (iOS 17 专属适配已启用) ======");
     }
 }

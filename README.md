@@ -16,11 +16,11 @@
 ## 📦 开箱即用（已编译好的 deb）
 
 已编译好的无根越狱包位于本仓库目录：
-- [`packages/com.yourname.camerabuttonswap_1.1.0_iphoneos-arm64.deb`](packages/com.yourname.camerabuttonswap_1.1.0_iphoneos-arm64.deb)
+- [`packages/com.yourname.camerabuttonswap_1.2.0_iphoneos-arm64.deb`](packages/com.yourname.camerabuttonswap_1.2.0_iphoneos-arm64.deb)
 
 ### 安装方法（Sileo / Filza）：
 
-1. 在手机上下载或通过 AirDrop 隔空投送 `com.yourname.camerabuttonswap_1.1.0_iphoneos-arm64.deb` 到手机。
+1. 在手机上下载或通过 AirDrop 隔空投送 `com.yourname.camerabuttonswap_1.2.0_iphoneos-arm64.deb` 到手机。
 2. 使用 **Filza** 打开，点击右上角分享选择 **“用 Sileo 安装”**（或直接在 Filza 内点击右上角安装）。
 3. 安装完成后，完全关闭相机 App 后台并重新打开即可生效。
 
