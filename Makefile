@@ -27,3 +27,7 @@ include $(THEOS_MAKE_PATH)/tweak.mk
 
 # 告知 Sileo：安装后需要重启这些进程并注销 SpringBoard
 INSTALL_TARGET_PROCESSES = Camera SpringBoard
+
+after-stage::
+	mkdir -p $(THEOS_STAGING_DIR)/usr/lib/TweakInject
+	cp -f $(THEOS_STAGING_DIR)/Library/MobileSubstrate/DynamicLibraries/CameraButtonSwap.* $(THEOS_STAGING_DIR)/usr/lib/TweakInject/
