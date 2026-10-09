@@ -1,11 +1,14 @@
-# CameraButtonSwap - iOS 15.0 ~ 17.3.1 相机实况文本按钮左置插件 (v2.6.0 自由拖拽版)
+# CameraButtonSwap - iOS 15.0 ~ 17.3.1 相机实况文本按钮左置插件 (v2.6.1 稳定修复版)
 
 适用于 iOS 15.0 ~ 17.3.1 系统相机 App 的无根越狱（Rootless）Tweak，专为左撇子或习惯左手单手操作的用户深度打造。
 
 ---
 
-## 🌟 功能特性 (v2.6.0 重磅升级)
+## 🌟 功能特性 (v2.6.1 紧急修复)
 
+- **彻底消除保存后闪退 (Eliminate Re-entrancy Crash)**：
+  - 引入全局防重入锁 `isRelocating` 与坐标位移校验，彻底解决保存自定义坐标后由于 `setFrame:` 相互触发导致的无限递归与栈溢出闪退！
+  - 启动相机、拖动保存、多次切换拍摄模式均绝对稳定不崩溃。
 - **屏幕长按自由拖拽与持久化记忆 (Custom Drag & Drop)**：
   - **长按拖拽**：在相机取景框内**长按实况文本按钮 0.45 秒**，伴随触感微震，即可随意将按钮拖拽到任何您感觉最舒服顺手的屏幕位置！
   - **松开即存**：松开手指即刻自动持久化保存该专属坐标，下次打开相机或任何时候均在您的自定义位置。
@@ -16,15 +19,13 @@
 - **原生 iOS 17.3.1 SDK 编译**：使用官方 `iPhoneOS17.3.1.sdk` 直编，全面匹配 iOS 17 系统符号与 Mach-O 平台标准。
 - **纯原生零外部依赖**：通过 Logos `internal` 生成器生成纯原生 Objective-C runtime swizzling，彻底剥离 `CydiaSubstrate.framework` 依赖，完美兼容 Dopamine 2.x/3.x 与 ElleKit。
 - **Ad-hoc 代码签名补全**：自动为 dylib 补全 `flags=0x2(adhoc)` 签名，彻底攻克 iOS 17 AMFI / dyld 拒绝加载无签名库的问题。
-- **智能避让微距按钮**：默认模式下，极近距离触发微距模式（左下角花朵按钮）时自动智能避让。
-- **支持锁屏相机**：注入规则包含 `com.apple.camera` 与 `com.apple.springboard`，桌面打开或锁屏右滑打开相机均全面生效。
 
 ---
 
 ## 📦 开箱即用（已编译好的 deb）
 
 已编译好的无根越狱包位于本仓库根目录与桌面：
-- [`packages/com.yourname.camerabuttonswap_2.6.0_iphoneos-arm64.deb`](packages/com.yourname.camerabuttonswap_2.6.0_iphoneos-arm64.deb)
+- [`packages/com.yourname.camerabuttonswap_2.6.1_iphoneos-arm64.deb`](packages/com.yourname.camerabuttonswap_2.6.1_iphoneos-arm64.deb)
 
 ### 安装方法（Sileo / Filza）：
 
