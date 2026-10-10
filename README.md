@@ -22,15 +22,21 @@
 
 ---
 
-## 📦 开箱即用（已编译好的 deb）
+## 📦 开箱即用（已编译好的 deb 安装包）
 
-已编译好的无根越狱包位于本仓库根目录与桌面：
-- [`packages/com.yourname.camerabuttonswap_2.6.1_iphoneos-arm64.deb`](packages/com.yourname.camerabuttonswap_2.6.1_iphoneos-arm64.deb)
+已编译好的安装包位于本仓库根目录、桌面与 [GitHub Release v2.6.1](https://github.com/tlsftlsftlsf/CameraButtonSwap/releases/tag/v2.6.1)：
+
+| 越狱类型 | 架构标识 | 安装包文件名 | 适用环境 |
+| :--- | :--- | :--- | :--- |
+| **标准无根 (Rootless)** | `iphoneos-arm64` | [`packages/com.yourname.camerabuttonswap_2.6.1_iphoneos-arm64.deb`](packages/com.yourname.camerabuttonswap_2.6.1_iphoneos-arm64.deb) | 官方标准 Dopamine 2.x/3.x、Palera1n |
+| **RootHide 无根** | `iphoneos-arm64e` | [`packages/com.yourname.camerabuttonswap_2.6.1_iphoneos-arm64e.deb`](packages/com.yourname.camerabuttonswap_2.6.1_iphoneos-arm64e.deb) | RootHide Dopamine、RootHide Bootstrap、Serotonin |
 
 ### 安装方法（Sileo / Filza）：
 
-1. 在手机上下载或通过 AirDrop 隔空投送 `com.yourname.camerabuttonswap_2.6.0_iphoneos-arm64.deb` 到手机。
-2. 使用 **Filza** 打开，点击右上角分享选择 **“用 Sileo 安装”**（或直接在 Filza 内点击右上角安装）。
+1. 根据您的越狱环境，通过 AirDrop 将对应包发送到手机：
+   - 如果是**标准 Dopamine**：安装 `...iphoneos-arm64.deb`；
+   - 如果是 **RootHide Dopamine**：安装 `...iphoneos-arm64e_roothide.deb`。
+2. 使用 **Filza** 打开，点击右上角分享选择 **“用 Sileo 安装”**（或直接在 Sileo 内搜索本地 deb 安装）。
 3. 安装完成后注销（Respring）或彻底关闭相机 App 后台并重新打开。长按实况文本按钮即可随心拖拽定制位置！
 
 ---
