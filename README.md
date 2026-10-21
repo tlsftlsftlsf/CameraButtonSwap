@@ -17,9 +17,9 @@
   - 仅 Hook 90x90 pt 以内的独立按钮实体，严格排除所有全屏分析画布与文本选区层（`VKCImageAnalysisBaseView` 等），彻底解决点击按钮后划词、复制文字失效的问题。
 - **纯原生零外部依赖 (Zero Substrate Dependency)**：
   - 通过 Logos `internal` 生成器生成纯原生 Objective-C runtime swizzling，彻底剥离 `CydiaSubstrate.framework` 依赖，完美兼容 Dopamine 2.x/3.x 与 ElleKit。
-- **原生 iOS 17.3.1 SDK 直编译与代码签名**：
-  - 使用官方 `iPhoneOS17.3.1.sdk` 编译，全面匹配 iOS 17 系统符号与 Mach-O 平台标准；
-  - 自动为 dylib 补全 `flags=0x2(adhoc)` 签名，彻底攻克 iOS 17 AMFI / dyld 拒绝加载无签名库的问题。
+- **全平台 SDK 兼容与 Ad-hoc 代码签名**：
+  - 默认针对 iOS 15.0+ 部署目标（`minos 15.0`）严格构建，确保向下 100% 兼容 iOS 15 标准无根设备，向上无缝支持 iOS 16 ~ 17.3.1；
+  - 自动为编译输出的 dylib 补全 `flags=0x2(adhoc)` 签名，彻底攻克 iOS 15 ~ 17 Dopamine / AMFI / dyld 拒绝加载无签名动态库的问题。
 - **双越狱架构原生支持**：
   - 原生支持官方标准无根越狱（Dopamine / Palera1n - `iphoneos-arm64`）；
   - 原生支持 RootHide 越狱生态（RootHide Dopamine / Bootstrap / Serotonin - `iphoneos-arm64e`）。
@@ -96,7 +96,7 @@ CameraButtonSwap/
 ### 环境要求
 - macOS 系统
 - [Theos](https://theos.dev/) 开发环境
-- iOS 17.3.1 SDK (`iPhoneOS17.3.1.sdk`)
+- iOS SDK (`iPhoneOS15.6.sdk` 或 `iPhoneOS17.3.1.sdk`)
 - `dpkg`、`ldid`、`codesign`
 
 ### 1. 编译标准无根版本 (Dopamine Rootless)

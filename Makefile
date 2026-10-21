@@ -1,8 +1,8 @@
 # 项目目标设备架构
 ARCHS = arm64 arm64e
 
-# 目标 iOS 版本（使用原生 iOS 17.3.1 SDK 编译）
-TARGET := iphone:clang:17.3.1:15.0
+# 目标 iOS 版本（使用原生 iPhoneOS15.6.sdk 编译，设置 minos=15.0，完美兼容 iOS 15 标准无根及 iOS 16/17）
+TARGET ?= iphone:clang:15.6:15.0
 
 # 无根越狱方案 (Rootless)
 THEOS_PACKAGE_SCHEME = rootless
@@ -32,6 +32,6 @@ include $(THEOS_MAKE_PATH)/tweak.mk
 INSTALL_TARGET_PROCESSES = Camera SpringBoard
 
 after-stage::
-	@echo "[*] Ensuring ad-hoc code signature for iOS 17 dyld / Dopamine..."
+	@echo "[*] Ensuring ad-hoc code signature for iOS 15 ~ 17 dyld / Dopamine..."
 	find $(THEOS_STAGING_DIR) -name "CameraButtonSwap.dylib" -exec codesign -f -s - {} +
 

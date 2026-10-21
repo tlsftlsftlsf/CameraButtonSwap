@@ -29,7 +29,7 @@
 // 前向接口声明
 // ============================================================================
 
-@interface CAMImageAnalysisButton : UIButton
+@interface CAMImageAnalysisButton : UIControl
 @end
 
 @interface VKImageAnalysisButton : UIButton
