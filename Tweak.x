@@ -1,21 +1,25 @@
 /*
- * CameraButtonSwap - iOS 15.0 ~ 17.3.1 (v2.6.1 彻底解决重入死循环闪退版)
+ * CameraButtonSwap - iOS 15.0 ~ 17.3.1 (v2.7.0 自动全选复制升级版)
  *
- * 核心升级与修复：
- *   1. 彻底解决重入递归闪退 (Eliminate Re-entrancy Stack Overflow Crash)：
+ * 核心升级与特性：
+ *   1. 点击实况文本按钮后自动全选复制 (Auto Select All & Copy)：
+ *      - 点击相机取景框内的实况文本按钮后，自动触发全选并复制全部文本到剪贴板；
+ *      - 多层级容灾保底机制：原生 selectAll + copyAllToClipboard / copyButtonPressed + 快捷操作 + 文本解析注入剪贴板；
+ *      - 包含硬件触感震动反馈与顶部浮动胶囊提示（“📋 已自动全选并复制”）。
+ *   2. 彻底解决重入递归闪退 (Eliminate Re-entrancy Stack Overflow Crash)：
  *      - 增加全局重入安全锁 isRelocating 与坐标位移阈值比对，彻底杜绝 setFrame / setCenter 自身调用的死循环与栈溢出！
  *      - 拖动结束保存坐标后，平滑更新布局，相机绝对不再闪退。
- *   2. 屏幕长按自由拖拽与持久化记忆 (Custom Drag & Drop)：
+ *   3. 屏幕长按自由拖拽与持久化记忆 (Custom Drag & Drop)：
  *      - 长按实况文本按钮 0.45 秒触发物理震动反馈，即可随心拖动到屏幕任意顺手位置；
  *      - 松开手指自动记忆该位置（自动保存至 NSUserDefaults），下次打开相机或任何时候均在专属位置；
  *      - 双击按钮或拖回左下角即可一键恢复默认推荐位置；
  *      - 拖动过程中带有顶部轻量胶囊提示。
- *   3. 深度保护 VisionKit 文本交互与选择系统：
+ *   4. 深度保护 VisionKit 文本交互与选择系统：
  *      - 严格限定仅 Hook 独立按钮实体（CAMImageAnalysisButton / VKImageAnalysisButton / VKCCornerLookupButton），
  *        尺寸严格限制在 90x90 pt 以内。
  *      - 严格排除 VKCImageAnalysisBaseView / VKCImageAnalysisView / VKCTextSelectionView / VKCActionInfoView 等
  *        文本分析画布与交互选择视图，确保划词、选中文本 100% 灵敏顺畅！
- *   4. 零 Substrate 依赖：纯原生 Objective-C runtime 交换，Ad-hoc 签名强化，原生 iOS 17.3.1 SDK 直编。
+ *   5. 零 Substrate 依赖：纯原生 Objective-C runtime 交换，Ad-hoc 签名强化，原生 iOS 17.3.1 SDK 直编。
  */
 
 #import <UIKit/UIKit.h>
@@ -23,19 +27,33 @@
 #import <dlfcn.h>
 #import <AudioToolbox/AudioToolbox.h>
 
-#define CBS_TAG @"[CameraButtonSwap-v2.6.1]"
+#define CBS_TAG @"[CameraButtonSwap-v2.7.0]"
 
 // ============================================================================
 // 前向接口声明
 // ============================================================================
 
 @interface CAMImageAnalysisButton : UIControl
+- (BOOL)isSelected;
 @end
 
 @interface VKImageAnalysisButton : UIButton
+- (BOOL)isSelected;
 @end
 
 @interface VKCCornerLookupButton : UIView
+@end
+
+@interface VKCImageAnalysisBaseView : UIView
+- (void)selectAll;
+- (void)copyAllToClipboard;
+- (void)copyButtonPressed:(id)sender;
+- (id)copyAllQuickAction;
+- (NSString *)text;
+- (NSString *)selectedText;
+- (id)analysisResult;
+- (id)actionInfoView;
+- (NSArray *)quickActions;
 @end
 
 @interface CAMFullscreenViewfinder : UIView
@@ -231,6 +249,313 @@ static void setButtonDragging(UIView *button, BOOL dragging) {
 }
 
 // ============================================================================
+// 自动全选与复制 (Auto Select All & Copy) 核心逻辑
+// ============================================================================
+
+static BOOL isAutoCopyEnabled(void) {
+    id val = [[NSUserDefaults standardUserDefaults] objectForKey:@"CBS_AutoCopyEnabled"];
+    if (val != nil) {
+        return [val boolValue];
+    }
+    return YES;
+}
+
+static NSArray<UIWindow *> *getAllActiveWindows(void) {
+    NSMutableArray<UIWindow *> *windows = [NSMutableArray array];
+    @try {
+        UIWindow *keyWin = [UIApplication sharedApplication].keyWindow;
+        if (keyWin) [windows addObject:keyWin];
+        for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            if (![windows containsObject:w]) {
+                [windows addObject:w];
+            }
+        }
+    } @catch (id e) {}
+    return windows;
+}
+
+static void collectAnalysisViews(UIView *root, NSMutableArray<UIView *> *results) {
+    if (!root) return;
+    NSString *clsName = NSStringFromClass([root class]);
+    if ([clsName containsString:@"ImageAnalysisBaseView"] ||
+        [clsName isEqualToString:@"VKCImageAnalysisView"] ||
+        (objc_getClass("VKCImageAnalysisBaseView") && [root isKindOfClass:objc_getClass("VKCImageAnalysisBaseView")])) {
+        if (![results containsObject:root]) {
+            [results addObject:root];
+        }
+    }
+    for (UIView *sub in root.subviews) {
+        collectAnalysisViews(sub, results);
+    }
+}
+
+static NSString *extractTextFromAnalysisView(UIView *view) {
+    if (!view) return nil;
+    NSString *str = nil;
+    
+    // 1. selectedText
+    if ([view respondsToSelector:@selector(selectedText)]) {
+        @try { str = [view performSelector:@selector(selectedText)]; } @catch (id e) {}
+    }
+    // 2. text
+    if (str.length == 0 && [view respondsToSelector:@selector(text)]) {
+        @try { str = [view performSelector:@selector(text)]; } @catch (id e) {}
+    }
+    // 3. analysisResult.transcript 或 allLines
+    if (str.length == 0 && [view respondsToSelector:@selector(analysisResult)]) {
+        @try {
+            id res = [view performSelector:@selector(analysisResult)];
+            if (res) {
+                if ([res respondsToSelector:@selector(transcript)]) {
+                    str = [res performSelector:@selector(transcript)];
+                } else if ([res respondsToSelector:@selector(text)]) {
+                    str = [res performSelector:@selector(text)];
+                } else if ([res respondsToSelector:@selector(allLines)]) {
+                    NSArray *lines = [res performSelector:@selector(allLines)];
+                    if ([lines isKindOfClass:[NSArray class]] && lines.count > 0) {
+                        NSMutableArray *lineTexts = [NSMutableArray array];
+                        for (id line in lines) {
+                            if ([line respondsToSelector:@selector(string)]) {
+                                [lineTexts addObject:[line performSelector:@selector(string)]];
+                            } else if ([line respondsToSelector:@selector(text)]) {
+                                [lineTexts addObject:[line performSelector:@selector(text)]];
+                            } else if ([line isKindOfClass:[NSString class]]) {
+                                [lineTexts addObject:line];
+                            }
+                        }
+                        if (lineTexts.count > 0) {
+                            str = [lineTexts componentsJoinedByString:@"\n"];
+                        }
+                    }
+                }
+            }
+        } @catch (id e) {}
+    }
+    // 4. textSelectionView
+    if (str.length == 0) {
+        @try {
+            UIView *tsv = [view valueForKey:@"textSelectionView"];
+            if (tsv) {
+                if ([tsv respondsToSelector:@selector(selectedText)]) {
+                    str = [tsv performSelector:@selector(selectedText)];
+                }
+                if (str.length == 0 && [tsv respondsToSelector:@selector(text)]) {
+                    str = [tsv performSelector:@selector(text)];
+                }
+            }
+        } @catch (id e) {}
+    }
+    return str;
+}
+
+static BOOL doAutoSelectAndCopy(UIView *baseView, UIWindow *win) {
+    if (!baseView) return NO;
+    
+    writeCBSLog(@"[AutoCopy] 开始执行全选与复制流程: view=%@", NSStringFromClass([baseView class]));
+    
+    // 1. 全选 (Select All)
+    BOOL didSelectAll = NO;
+    if ([baseView respondsToSelector:@selector(selectAll)]) {
+        @try {
+            [baseView performSelector:@selector(selectAll)];
+            didSelectAll = YES;
+            writeCBSLog(@"[AutoCopy] 成功执行 [baseView selectAll]");
+        } @catch (id e) {
+            writeCBSLog(@"[AutoCopy] 执行 selectAll 异常: %@", e);
+        }
+    }
+    @try {
+        UIView *tsv = [baseView valueForKey:@"textSelectionView"];
+        if (tsv) {
+            if ([tsv respondsToSelector:@selector(selectAll:)]) {
+                [tsv performSelector:@selector(selectAll:) withObject:nil];
+                didSelectAll = YES;
+            } else if ([tsv respondsToSelector:@selector(selectAll)]) {
+                [tsv performSelector:@selector(selectAll)];
+                didSelectAll = YES;
+            }
+        }
+    } @catch (id e) {}
+    
+    // 2. 拷贝到剪贴板 (Copy All)
+    BOOL didCopy = NO;
+    
+    // 2.1 系统内置 copyAllToClipboard
+    if ([baseView respondsToSelector:@selector(copyAllToClipboard)]) {
+        @try {
+            [baseView performSelector:@selector(copyAllToClipboard)];
+            didCopy = YES;
+            writeCBSLog(@"[AutoCopy] 成功执行 [baseView copyAllToClipboard]");
+        } @catch (id e) {
+            writeCBSLog(@"[AutoCopy] 执行 copyAllToClipboard 异常: %@", e);
+        }
+    }
+    
+    // 2.2 系统内置 copyButtonPressed:
+    if (!didCopy && [baseView respondsToSelector:@selector(copyButtonPressed:)]) {
+        @try {
+            [baseView performSelector:@selector(copyButtonPressed:) withObject:nil];
+            didCopy = YES;
+            writeCBSLog(@"[AutoCopy] 成功执行 [baseView copyButtonPressed:]");
+        } @catch (id e) {}
+    }
+    
+    // 2.3 快捷动作 copyAllQuickAction
+    if ([baseView respondsToSelector:@selector(copyAllQuickAction)]) {
+        @try {
+            id qa = nil;
+            if ([baseView isKindOfClass:objc_getClass("VKCImageAnalysisBaseView")]) {
+                qa = [((VKCImageAnalysisBaseView *)baseView) copyAllQuickAction];
+            } else {
+                qa = [baseView valueForKey:@"copyAllQuickAction"];
+            }
+            if (qa) {
+                if ([qa respondsToSelector:@selector(_vk_performAction)]) {
+                    [qa performSelector:@selector(_vk_performAction)];
+                    didCopy = YES;
+                } else if ([qa respondsToSelector:@selector(performDefaultElementAction)]) {
+                    [qa performSelector:@selector(performDefaultElementAction)];
+                    didCopy = YES;
+                }
+            }
+        } @catch (id e) {}
+    }
+    
+    // 2.4 从 actionInfoView 查找触发“全部拷贝”/“全选”按钮
+    @try {
+        UIView *aiv = [baseView respondsToSelector:@selector(actionInfoView)] ? [baseView performSelector:@selector(actionInfoView)] : nil;
+        if (!aiv) aiv = [baseView valueForKey:@"actionInfoView"];
+        if (aiv) {
+            NSArray *actions = [aiv respondsToSelector:@selector(allQuickActions)] ? [aiv performSelector:@selector(allQuickActions)] : nil;
+            if (!actions && [aiv respondsToSelector:@selector(quickActions)]) {
+                actions = [aiv performSelector:@selector(quickActions)];
+            }
+            for (id btn in actions) {
+                NSString *title = nil;
+                if ([btn respondsToSelector:@selector(text)]) {
+                    title = [btn performSelector:@selector(text)];
+                } else if ([btn respondsToSelector:@selector(titleLabel)]) {
+                    title = [[btn performSelector:@selector(titleLabel)] text];
+                }
+                if ([title containsString:@"全部拷贝"] || [title containsString:@"全选"] ||
+                    [title localizedCaseInsensitiveContainsString:@"copy all"] ||
+                    [title localizedCaseInsensitiveContainsString:@"select all"]) {
+                    if ([btn respondsToSelector:@selector(_vk_performAction)]) {
+                        [btn performSelector:@selector(_vk_performAction)];
+                        didCopy = YES;
+                    } else if ([btn respondsToSelector:@selector(sendActionsForControlEvents:)]) {
+                        [btn sendActionsForControlEvents:UIControlEventTouchUpInside];
+                        didCopy = YES;
+                    }
+                    writeCBSLog(@"[AutoCopy] 成功触发快捷按钮: %@", title);
+                    break;
+                }
+            }
+        }
+    } @catch (id e) {}
+    
+    // 2.5 提取文本直接写入系统剪贴板 (终极保底)
+    NSString *extractedText = extractTextFromAnalysisView(baseView);
+    if (extractedText.length > 0) {
+        [UIPasteboard generalPasteboard].string = extractedText;
+        didCopy = YES;
+        writeCBSLog(@"[AutoCopy] 成功写入剪贴板 (字数: %lu)", (unsigned long)extractedText.length);
+    }
+    
+    if (didSelectAll || didCopy) {
+        triggerHapticFeedback();
+        showTipToast(@"📋 已自动全选并复制", win ?: baseView.window);
+        return YES;
+    }
+    
+    return NO;
+}
+
+static BOOL g_autoCopyActive = NO;
+static NSTimeInterval g_autoCopyStartTime = 0;
+static NSTimeInterval g_lastCopySuccessTime = 0;
+static NSTimeInterval g_lastTapTime = 0;
+
+static BOOL checkAndExecuteAutoCopy(UIView *specificView, UIWindow *win) {
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (now - g_lastCopySuccessTime < 1.0) {
+        return YES;
+    }
+    
+    NSMutableArray<UIView *> *candidates = [NSMutableArray array];
+    if (specificView) {
+        [candidates addObject:specificView];
+    } else {
+        NSArray<UIWindow *> *windows = getAllActiveWindows();
+        for (UIWindow *w in windows) {
+            collectAnalysisViews(w, candidates);
+        }
+    }
+    
+    for (UIView *view in candidates) {
+        NSString *text = extractTextFromAnalysisView(view);
+        BOOL hasQuickActions = NO;
+        @try {
+            NSArray *qa = [view respondsToSelector:@selector(quickActions)] ? [view performSelector:@selector(quickActions)] : nil;
+            hasQuickActions = (qa.count > 0);
+        } @catch (id e) {}
+        
+        if (text.length > 0 || hasQuickActions) {
+            BOOL success = doAutoSelectAndCopy(view, win ?: view.window);
+            if (success) {
+                g_lastCopySuccessTime = now;
+                return YES;
+            }
+        }
+    }
+    
+    return NO;
+}
+
+static void startAutoSelectAndCopySequence(UIView *button) {
+    g_autoCopyActive = YES;
+    g_autoCopyStartTime = [NSDate timeIntervalSinceReferenceDate];
+    
+    UIWindow *win = button.window ?: [UIApplication sharedApplication].keyWindow ?: [UIApplication sharedApplication].windows.firstObject;
+    
+    // 立即执行一次探测
+    if (checkAndExecuteAutoCopy(nil, win)) {
+        g_autoCopyActive = NO;
+        return;
+    }
+    
+    // 渐进多波次重试，覆盖 0.08s ~ 1.6s
+    NSArray *delays = @[@0.08, @0.20, @0.35, @0.55, @0.80, @1.20, @1.60];
+    for (NSNumber *delayNum in delays) {
+        double d = [delayNum doubleValue];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(d * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (!g_autoCopyActive) return;
+            if ([NSDate timeIntervalSinceReferenceDate] - g_autoCopyStartTime > 2.5) {
+                g_autoCopyActive = NO;
+                return;
+            }
+            UIWindow *targetWin = button.window ?: [UIApplication sharedApplication].keyWindow ?: [UIApplication sharedApplication].windows.firstObject;
+            if (checkAndExecuteAutoCopy(nil, targetWin)) {
+                g_autoCopyActive = NO;
+            }
+        });
+    }
+}
+
+static void handleLiveTextButtonTapped(UIView *button) {
+    if (!isAutoCopyEnabled()) return;
+    
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (now - g_lastTapTime < 0.8) {
+        return; // 防抖保护
+    }
+    g_lastTapTime = now;
+    
+    writeCBSLog(@"[AutoCopy] 触发实况文本按钮点击，准备全选复制流程");
+    startAutoSelectAndCopySequence(button);
+}
+
+// ============================================================================
 // 手势管理器：负责长按自由拖拽与双击复位
 // ============================================================================
 
@@ -286,6 +611,7 @@ static void relocateLiveTextButton(UIView *button);
     
     if (gesture.state == UIGestureRecognizerStateBegan) {
         setButtonDragging(btn, YES);
+        g_lastTapTime = [NSDate timeIntervalSinceReferenceDate] + 1.0; // 拖动期间屏蔽自动复制
         triggerHapticFeedback();
         
         // 放大并提升层级，显示选中反馈
@@ -346,8 +672,9 @@ static void relocateLiveTextButton(UIView *button);
             showTipToast(@"✅ 已记住该位置，下次自动生效", btn.window);
         }
         
-        // 关键：保存完成并稳定后再解除拖拽标记
+        // 关键：保存完成并稳定后再解除拖拽标记，并设置保护时间
         setButtonDragging(btn, NO);
+        g_lastTapTime = [NSDate timeIntervalSinceReferenceDate] + 0.5;
     }
 }
 
@@ -355,6 +682,7 @@ static void relocateLiveTextButton(UIView *button);
     UIView *btn = gesture.view;
     if (!btn || !btn.superview) return;
     
+    g_lastTapTime = [NSDate timeIntervalSinceReferenceDate] + 1.0; // 复位屏蔽自动复制
     triggerHapticFeedback();
     
     // 清除自定义位置
@@ -459,10 +787,41 @@ static void relocateLiveTextButton(UIView *button) {
 }
 
 // ============================================================================
-// 精准类级 Hooks (防重入拦截 setFrame 与 setCenter)
+// 精准类级 Hooks (setFrame/setCenter + 按钮点击拦截)
 // ============================================================================
 
 %hook CAMImageAnalysisButton
+
+- (void)sendAction:(SEL)action to:(id)target forEvent:(UIEvent *)event {
+    %orig;
+    if (!isButtonDragging((UIView *)self)) {
+        handleLiveTextButtonTapped((UIView *)self);
+    }
+}
+
+- (void)setSelected:(BOOL)selected {
+    BOOL wasSelected = NO;
+    if ([self respondsToSelector:@selector(isSelected)]) {
+        wasSelected = [self isSelected];
+    }
+    %orig;
+    if (selected && !wasSelected && !isButtonDragging((UIView *)self)) {
+        handleLiveTextButtonTapped((UIView *)self);
+    }
+}
+
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    %orig;
+    if (!isButtonDragging((UIView *)self)) {
+        UITouch *touch = [touches anyObject];
+        if (touch) {
+            CGPoint loc = [touch locationInView:(UIView *)self];
+            if ([(UIView *)self pointInside:loc withEvent:event]) {
+                handleLiveTextButtonTapped((UIView *)self);
+            }
+        }
+    }
+}
 
 - (void)setFrame:(CGRect)frame {
     %orig;
@@ -482,6 +841,37 @@ static void relocateLiveTextButton(UIView *button) {
 
 %hook VKImageAnalysisButton
 
+- (void)sendAction:(SEL)action to:(id)target forEvent:(UIEvent *)event {
+    %orig;
+    if (!isButtonDragging((UIView *)self)) {
+        handleLiveTextButtonTapped((UIView *)self);
+    }
+}
+
+- (void)setSelected:(BOOL)selected {
+    BOOL wasSelected = NO;
+    if ([self respondsToSelector:@selector(isSelected)]) {
+        wasSelected = [self isSelected];
+    }
+    %orig;
+    if (selected && !wasSelected && !isButtonDragging((UIView *)self)) {
+        handleLiveTextButtonTapped((UIView *)self);
+    }
+}
+
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    %orig;
+    if (!isButtonDragging((UIView *)self)) {
+        UITouch *touch = [touches anyObject];
+        if (touch) {
+            CGPoint loc = [touch locationInView:(UIView *)self];
+            if ([(UIView *)self pointInside:loc withEvent:event]) {
+                handleLiveTextButtonTapped((UIView *)self);
+            }
+        }
+    }
+}
+
 - (void)setFrame:(CGRect)frame {
     %orig;
     if (!isRelocating && !isButtonDragging((UIView *)self)) {
@@ -500,6 +890,19 @@ static void relocateLiveTextButton(UIView *button) {
 
 %hook VKCCornerLookupButton
 
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    %orig;
+    if (!isButtonDragging((UIView *)self)) {
+        UITouch *touch = [touches anyObject];
+        if (touch) {
+            CGPoint loc = [touch locationInView:(UIView *)self];
+            if ([(UIView *)self pointInside:loc withEvent:event]) {
+                handleLiveTextButtonTapped((UIView *)self);
+            }
+        }
+    }
+}
+
 - (void)setFrame:(CGRect)frame {
     %orig;
     if (!isRelocating && !isButtonDragging((UIView *)self)) {
@@ -513,6 +916,67 @@ static void relocateLiveTextButton(UIView *button) {
         relocateLiveTextButton((UIView *)self);
     }
 }
+
+%end
+
+// ============================================================================
+// VisionKitCore 响应式分析监听 Hooks (即刻捕获分析就绪事件)
+// ============================================================================
+
+%group VisionKitCoreHooks
+
+%hook VKCImageAnalysisBaseView
+
+- (void)loadQuickActionsIfNecessary {
+    %orig;
+    if (g_autoCopyActive) {
+        if (checkAndExecuteAutoCopy((UIView *)self, [(UIView *)self window])) {
+            g_autoCopyActive = NO;
+        }
+    }
+}
+
+- (void)setQuickActions:(NSArray *)quickActions {
+    %orig;
+    if (g_autoCopyActive && quickActions.count > 0) {
+        if (checkAndExecuteAutoCopy((UIView *)self, [(UIView *)self window])) {
+            g_autoCopyActive = NO;
+        }
+    }
+}
+
+- (void)setCopyAllQuickAction:(id)action {
+    %orig;
+    if (g_autoCopyActive && action != nil) {
+        if (checkAndExecuteAutoCopy((UIView *)self, [(UIView *)self window])) {
+            g_autoCopyActive = NO;
+        }
+    }
+}
+
+- (void)analysisDidUpdateForTypes:(unsigned long long)types {
+    %orig;
+    if (g_autoCopyActive) {
+        if (checkAndExecuteAutoCopy((UIView *)self, [(UIView *)self window])) {
+            g_autoCopyActive = NO;
+        }
+    }
+}
+
+- (void)setAnalysisResult:(id)result {
+    %orig;
+    if (g_autoCopyActive && result != nil) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (g_autoCopyActive) {
+                if (checkAndExecuteAutoCopy((UIView *)self, [(UIView *)self window])) {
+                    g_autoCopyActive = NO;
+                }
+            }
+        });
+    }
+}
+
+%end
 
 %end
 
@@ -588,6 +1052,13 @@ static void relocateLiveTextButton(UIView *button) {
         dlopen("/System/Library/Frameworks/VisionKit.framework/VisionKit", RTLD_NOW);
         
         %init;
-        writeCBSLog(@"[Ctor] Hooks 注册完毕");
+        
+        Class clsBaseView = objc_getClass("VKCImageAnalysisBaseView");
+        if (clsBaseView) {
+            writeCBSLog(@"[Ctor] 动态注册 VisionKitCoreHooks (VKCImageAnalysisBaseView)");
+            %init(VisionKitCoreHooks, VKCImageAnalysisBaseView = clsBaseView);
+        }
+        
+        writeCBSLog(@"[Ctor] 全部 Hooks 注册完毕");
     }
 }
