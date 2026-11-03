@@ -1,0 +1,159 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>entry</key>
+	<dict>
+		<key>cell</key>
+		<string>PSLinkCell</string>
+		<key>icon</key>
+		<string>icon.png</string>
+		<key>label</key>
+		<string>CameraButtonSwap</string>
+	</dict>
+	<key>items</key>
+	<array>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>实况文本核心功能</string>
+			<key>footerText</key>
+			<string>开启后，在相机中轻点实况文本按钮，将自动全选当前识别的所有文字并写入剪贴板。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.yourname.camerabuttonswap</string>
+			<key>key</key>
+			<string>CBS_AutoCopyEnabled</string>
+			<key>label</key>
+			<string>点击自动全选复制</string>
+			<key>PostNotification</key>
+			<string>com.yourname.camerabuttonswap.prefschanged</string>
+		</dict>
+
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>复制后自动打开指定 App</string>
+			<key>footerText</key>
+			<string>开启后，相机完成自动全选复制并提示后，将自动跳转打开上述指定的 App 或 URL Scheme。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.yourname.camerabuttonswap</string>
+			<key>key</key>
+			<string>CBS_OpenAppAfterCopyEnabled</string>
+			<key>label</key>
+			<string>复制后自动打开 App</string>
+			<key>PostNotification</key>
+			<string>com.yourname.camerabuttonswap.prefschanged</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSLinkListCell</string>
+			<key>default</key>
+			<string>com.tencent.xin</string>
+			<key>defaults</key>
+			<string>com.yourname.camerabuttonswap</string>
+			<key>key</key>
+			<string>CBS_TargetAppChoice</string>
+			<key>label</key>
+			<string>目标应用</string>
+			<key>detail</key>
+			<string>PSListItemsController</string>
+			<key>validTitles</key>
+			<array>
+				<string>微信 (WeChat)</string>
+				<string>系统备忘录 (Notes)</string>
+				<string>快捷指令 (Shortcuts)</string>
+				<string>系统翻译 (Translate)</string>
+				<string>Safari 浏览器</string>
+				<string>信息 (Messages)</string>
+				<string>自定义 (Custom)</string>
+			</array>
+			<key>validValues</key>
+			<array>
+				<string>com.tencent.xin</string>
+				<string>com.apple.mobilenotes</string>
+				<string>com.apple.shortcuts</string>
+				<string>com.apple.Translate</string>
+				<string>com.apple.mobilesafari</string>
+				<string>com.apple.MobileSMS</string>
+				<string>custom</string>
+			</array>
+			<key>PostNotification</key>
+			<string>com.yourname.camerabuttonswap.prefschanged</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSEditTextCell</string>
+			<key>default</key>
+			<string></string>
+			<key>defaults</key>
+			<string>com.yourname.camerabuttonswap</string>
+			<key>key</key>
+			<string>CBS_CustomAppTarget</string>
+			<key>placeholder</key>
+			<string>输入自定义 Bundle ID 或 URL Scheme</string>
+			<key>PostNotification</key>
+			<string>com.yourname.camerabuttonswap.prefschanged</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSLinkListCell</string>
+			<key>default</key>
+			<real>0.4</real>
+			<key>defaults</key>
+			<string>com.yourname.camerabuttonswap</string>
+			<key>key</key>
+			<string>CBS_OpenAppDelay</string>
+			<key>label</key>
+			<string>跳转延迟时间</string>
+			<key>detail</key>
+			<string>PSListItemsController</string>
+			<key>validTitles</key>
+			<array>
+				<string>极速 (0.2 秒)</string>
+				<string>适中 (0.4 秒，推荐)</string>
+				<string>从容 (0.7 秒)</string>
+				<string>稍长 (1.0 秒)</string>
+			</array>
+			<key>validValues</key>
+			<array>
+				<real>0.2</real>
+				<real>0.4</real>
+				<real>0.7</real>
+				<real>1.0</real>
+			</array>
+			<key>PostNotification</key>
+			<string>com.yourname.camerabuttonswap.prefschanged</string>
+		</dict>
+
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>操作手势说明</string>
+			<key>footerText</key>
+			<string>• 单击实况文本按钮：自动全选并复制全部文字（若开启自动打开则跳转对应 App）。
+• 长按实况文本按钮 0.45 秒：进入拖拽模式，可随心放置到屏幕任意顺手位置。
+• 双击实况文本按钮：一键重置回默认推荐位置。
+• 三击实况文本按钮：在相机内快速呼出快捷设置面板。
+
+版本: v2.8.0</string>
+		</dict>
+	</array>
+	<key>title</key>
+	<string>CameraButtonSwap</string>
+</dict>
+</plist>

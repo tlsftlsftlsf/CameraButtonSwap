@@ -1,25 +1,31 @@
 /*
- * CameraButtonSwap - iOS 15.0 ~ 17.3.1 (v2.7.0 自动全选复制升级版)
+ * CameraButtonSwap - iOS 15.0 ~ 17.3.1 (v2.8.0 自动复制与打开指定App增强版)
  *
  * 核心升级与特性：
- *   1. 点击实况文本按钮后自动全选复制 (Auto Select All & Copy)：
+ *   1. 自动复制后打开指定 App (Open Designated App After Copy)：
+ *      - 新增设置项：支持在自动全选复制后，自动跳转打开预设或自定义的 App；
+ *      - 预设支持：微信 (WeChat)、系统备忘录 (Notes)、快捷指令 (Shortcuts)、系统翻译 (Translate)、Safari、信息等；
+ *      - 自定义支持：支持输入任意第三方 App 的 Bundle ID（如 com.flomo.app）或 URL Scheme（如 drafts://）；
+ *      - 包含跳转延迟时间设置（0.2s ~ 1.0s），提供极度平滑的剪贴板动画与视觉反馈；
+ *      - 双入口设置：系统「设置」App 偏好设置面板 (PreferenceLoader) + 相机内三击实况文本按钮直接呼出快捷设置菜单。
+ *   2. 点击实况文本按钮后自动全选复制 (Auto Select All & Copy)：
  *      - 点击相机取景框内的实况文本按钮后，自动触发全选并复制全部文本到剪贴板；
  *      - 多层级容灾保底机制：原生 selectAll + copyAllToClipboard / copyButtonPressed + 快捷操作 + 文本解析注入剪贴板；
- *      - 包含硬件触感震动反馈与顶部浮动胶囊提示（“📋 已自动全选并复制”）。
- *   2. 彻底解决重入递归闪退 (Eliminate Re-entrancy Stack Overflow Crash)：
+ *      - 包含硬件触感震动反馈与顶部浮动胶囊提示。
+ *   3. 彻底解决重入递归闪退 (Eliminate Re-entrancy Stack Overflow Crash)：
  *      - 增加全局重入安全锁 isRelocating 与坐标位移阈值比对，彻底杜绝 setFrame / setCenter 自身调用的死循环与栈溢出！
  *      - 拖动结束保存坐标后，平滑更新布局，相机绝对不再闪退。
- *   3. 屏幕长按自由拖拽与持久化记忆 (Custom Drag & Drop)：
+ *   4. 屏幕长按自由拖拽与持久化记忆 (Custom Drag & Drop)：
  *      - 长按实况文本按钮 0.45 秒触发物理震动反馈，即可随心拖动到屏幕任意顺手位置；
  *      - 松开手指自动记忆该位置（自动保存至 NSUserDefaults），下次打开相机或任何时候均在专属位置；
  *      - 双击按钮或拖回左下角即可一键恢复默认推荐位置；
- *      - 拖动过程中带有顶部轻量胶囊提示。
- *   4. 深度保护 VisionKit 文本交互与选择系统：
+ *      - 三击按钮即可呼出设置菜单；拖动过程中带有顶部轻量胶囊提示。
+ *   5. 深度保护 VisionKit 文本交互与选择系统：
  *      - 严格限定仅 Hook 独立按钮实体（CAMImageAnalysisButton / VKImageAnalysisButton / VKCCornerLookupButton），
  *        尺寸严格限制在 90x90 pt 以内。
  *      - 严格排除 VKCImageAnalysisBaseView / VKCImageAnalysisView / VKCTextSelectionView / VKCActionInfoView 等
  *        文本分析画布与交互选择视图，确保划词、选中文本 100% 灵敏顺畅！
- *   5. 零 Substrate 依赖：纯原生 Objective-C runtime 交换，Ad-hoc 签名强化，原生 iOS 17.3.1 SDK 直编。
+ *   6. 零 Substrate 依赖：纯原生 Objective-C runtime 交换，Ad-hoc 签名强化，原生 iOS 17.3.1 SDK 直编。
  */
 
 #import <UIKit/UIKit.h>
@@ -27,7 +33,9 @@
 #import <dlfcn.h>
 #import <AudioToolbox/AudioToolbox.h>
 
-#define CBS_TAG @"[CameraButtonSwap-v2.7.0]"
+#define CBS_TAG @"[CameraButtonSwap-v2.8.0]"
+#define CBS_PREFS_DOMAIN "com.yourname.camerabuttonswap"
+#define CBS_PREFS_CHANGED_NOTIF CFSTR("com.yourname.camerabuttonswap.prefschanged")
 
 // ============================================================================
 // 前向接口声明
@@ -249,16 +257,205 @@ static void setButtonDragging(UIView *button, BOOL dragging) {
 }
 
 // ============================================================================
-// 自动全选与复制 (Auto Select All & Copy) 核心逻辑
+// 偏好设置与多通道同步 (Preferences & Multi-channel Sync)
 // ============================================================================
 
+static id getCBSPreference(NSString *key) {
+    if (!key) return nil;
+    
+    // 1. 优先从 cfprefsd (com.yourname.camerabuttonswap) 读取
+    CFPropertyListRef val = CFPreferencesCopyAppValue((CFStringRef)key, CFSTR(CBS_PREFS_DOMAIN));
+    if (val != NULL) {
+        id result = (__bridge_transfer id)val;
+        return result;
+    }
+    
+    // 2. 尝试从标准 /var/mobile/Library/Preferences 读取文件
+    NSArray *paths = @[
+        @"/var/mobile/Library/Preferences/com.yourname.camerabuttonswap.plist",
+        @"/var/jb/var/mobile/Library/Preferences/com.yourname.camerabuttonswap.plist"
+    ];
+    for (NSString *p in paths) {
+        if ([[NSFileManager defaultManager] fileExistsAtPath:p]) {
+            NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:p];
+            if (dict && dict[key] != nil) {
+                return dict[key];
+            }
+        }
+    }
+    
+    // 3. 从 NSUserDefaults standardUserDefaults 读取
+    id userDefVal = [[NSUserDefaults standardUserDefaults] objectForKey:key];
+    if (userDefVal != nil) {
+        return userDefVal;
+    }
+    
+    return nil;
+}
+
+static void setCBSPreference(NSString *key, id value) {
+    if (!key) return;
+    
+    // 1. 写到 NSUserDefaults
+    if (value) {
+        [[NSUserDefaults standardUserDefaults] setObject:value forKey:key];
+    } else {
+        [[NSUserDefaults standardUserDefaults] removeObjectForKey:key];
+    }
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    
+    // 2. 写到 cfprefsd
+    CFPreferencesSetAppValue((CFStringRef)key, (CFPropertyListRef)value, CFSTR(CBS_PREFS_DOMAIN));
+    CFPreferencesAppSynchronize(CFSTR(CBS_PREFS_DOMAIN));
+    
+    // 3. 同步写入文件
+    @try {
+        NSString *path = @"/var/mobile/Library/Preferences/com.yourname.camerabuttonswap.plist";
+        NSMutableDictionary *dict = [NSMutableDictionary dictionaryWithContentsOfFile:path] ?: [NSMutableDictionary dictionary];
+        if (value) {
+            dict[key] = value;
+        } else {
+            [dict removeObjectForKey:key];
+        }
+        [dict writeToFile:path atomically:YES];
+    } @catch (id e) {}
+    
+    // 4. 发送 Darwin 通知
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                         CBS_PREFS_CHANGED_NOTIF,
+                                         NULL, NULL, YES);
+}
+
 static BOOL isAutoCopyEnabled(void) {
-    id val = [[NSUserDefaults standardUserDefaults] objectForKey:@"CBS_AutoCopyEnabled"];
+    id val = getCBSPreference(@"CBS_AutoCopyEnabled");
     if (val != nil) {
         return [val boolValue];
     }
-    return YES;
+    return YES; // 默认开启
 }
+
+static BOOL isOpenAppAfterCopyEnabled(void) {
+    id val = getCBSPreference(@"CBS_OpenAppAfterCopyEnabled");
+    if (val != nil) {
+        return [val boolValue];
+    }
+    return NO; // 默认关闭，需用户在设置中开启
+}
+
+static NSString *getTargetAppChoice(void) {
+    id val = getCBSPreference(@"CBS_TargetAppChoice");
+    if ([val isKindOfClass:[NSString class]] && ((NSString *)val).length > 0) {
+        return (NSString *)val;
+    }
+    return @"com.tencent.xin"; // 默认微信
+}
+
+static NSString *getCustomAppTarget(void) {
+    id val = getCBSPreference(@"CBS_CustomAppTarget");
+    if ([val isKindOfClass:[NSString class]] && ((NSString *)val).length > 0) {
+        return (NSString *)val;
+    }
+    return @"";
+}
+
+static NSTimeInterval getOpenAppDelay(void) {
+    id val = getCBSPreference(@"CBS_OpenAppDelay");
+    if (val != nil) {
+        return [val doubleValue];
+    }
+    return 0.4; // 默认 0.4 秒
+}
+
+static NSString *getEffectiveTargetApp(void) {
+    NSString *choice = getTargetAppChoice();
+    if ([choice isEqualToString:@"custom"]) {
+        NSString *custom = getCustomAppTarget();
+        if (custom.length > 0) {
+            return custom;
+        }
+        return @"com.tencent.xin";
+    }
+    return choice;
+}
+
+static NSString *getReadableAppName(NSString *target) {
+    if ([target isEqualToString:@"com.tencent.xin"] || [target isEqualToString:@"weixin://"]) return @"微信";
+    if ([target isEqualToString:@"com.apple.mobilenotes"] || [target isEqualToString:@"mobilenotes://"]) return @"备忘录";
+    if ([target isEqualToString:@"com.apple.shortcuts"] || [target isEqualToString:@"shortcuts://"]) return @"快捷指令";
+    if ([target isEqualToString:@"com.apple.Translate"] || [target isEqualToString:@"translate://"]) return @"翻译";
+    if ([target isEqualToString:@"com.apple.mobilesafari"] || [target isEqualToString:@"https://"]) return @"Safari";
+    if ([target isEqualToString:@"com.apple.MobileSMS"] || [target isEqualToString:@"sms://"]) return @"信息";
+    if ([target containsString:@"://"]) {
+        return [target componentsSeparatedByString:@"://"].firstObject;
+    }
+    return target;
+}
+
+static NSString *getURLSchemeForKnownBundleID(NSString *bundleID) {
+    if ([bundleID isEqualToString:@"com.tencent.xin"]) return @"weixin://";
+    if ([bundleID isEqualToString:@"com.apple.mobilenotes"]) return @"mobilenotes://";
+    if ([bundleID isEqualToString:@"com.apple.shortcuts"]) return @"shortcuts://";
+    if ([bundleID isEqualToString:@"com.apple.Translate"]) return @"translate://";
+    if ([bundleID isEqualToString:@"com.apple.mobilesafari"]) return @"https://www.apple.com";
+    if ([bundleID isEqualToString:@"com.apple.MobileSMS"]) return @"sms://";
+    return nil;
+}
+
+static void openTargetAppOrURL(NSString *target) {
+    if (!target || target.length == 0) return;
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
+            writeCBSLog(@"[OpenApp] 启动目标应用: %@", target);
+            
+            // 1. 如果包含 ://，以 URL Scheme 启动
+            if ([target containsString:@"://"]) {
+                NSURL *url = [NSURL URLWithString:target];
+                if (url) {
+                    [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:^(BOOL success) {
+                        writeCBSLog(@"[OpenApp] UIApplication openURL: %@ 结果: %d", target, success);
+                    }];
+                    return;
+                }
+            }
+            
+            // 2. 以 Bundle ID 方式启动 (使用 LSApplicationWorkspace)
+            Class wsClass = objc_getClass("LSApplicationWorkspace");
+            if (wsClass) {
+                id ws = [wsClass performSelector:@selector(defaultWorkspace)];
+                if ([ws respondsToSelector:@selector(openApplicationWithBundleID:)]) {
+                    BOOL ok = (BOOL)[ws performSelector:@selector(openApplicationWithBundleID:) withObject:target];
+                    writeCBSLog(@"[OpenApp] LSApplicationWorkspace openApplicationWithBundleID: %@ 结果: %d", target, ok);
+                    if (ok) return;
+                }
+            }
+            
+            // 3. 如果通过 Bundle ID 未能直接唤起，降级尝试已知 URL Scheme
+            NSString *knownScheme = getURLSchemeForKnownBundleID(target);
+            if (knownScheme) {
+                NSURL *url = [NSURL URLWithString:knownScheme];
+                if (url) {
+                    [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+                    return;
+                }
+            }
+            
+            // 4. 兜底补全 :// 尝试唤起
+            NSURL *fallbackUrl = [NSURL URLWithString:[NSString stringWithFormat:@"%@://", target]];
+            if (fallbackUrl) {
+                [[UIApplication sharedApplication] openURL:fallbackUrl options:@{} completionHandler:nil];
+            }
+        } @catch (id e) {
+            writeCBSLog(@"[OpenApp] 打开应用异常: %@", e);
+        }
+    });
+}
+
+// ============================================================================
+// 自动全选与复制 (Auto Select All & Copy) 核心逻辑
+// ============================================================================
+
+static BOOL isAutoCopyEnabled(void);
 
 static NSArray<UIWindow *> *getAllActiveWindows(void) {
     NSMutableArray<UIWindow *> *windows = [NSMutableArray array];
@@ -464,7 +661,20 @@ static BOOL doAutoSelectAndCopy(UIView *baseView, UIWindow *win) {
     
     if (didSelectAll || didCopy) {
         triggerHapticFeedback();
-        showTipToast(@"📋 已自动全选并复制", win ?: baseView.window);
+        
+        BOOL shouldOpenApp = isOpenAppAfterCopyEnabled();
+        NSString *targetApp = getEffectiveTargetApp();
+        NSString *appName = getReadableAppName(targetApp);
+        
+        if (shouldOpenApp && targetApp.length > 0) {
+            showTipToast([NSString stringWithFormat:@"📋 已复制，正在打开%@...", appName], win ?: baseView.window);
+            NSTimeInterval delay = getOpenAppDelay();
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                openTargetAppOrURL(targetApp);
+            });
+        } else {
+            showTipToast(@"📋 已自动全选并复制", win ?: baseView.window);
+        }
         return YES;
     }
     
@@ -556,10 +766,13 @@ static void handleLiveTextButtonTapped(UIView *button) {
 }
 
 // ============================================================================
-// 手势管理器：负责长按自由拖拽与双击复位
+// 手势管理器：负责长按自由拖拽与双击复位、三击快捷设置
 // ============================================================================
 
 static void relocateLiveTextButton(UIView *button);
+static void showAppSelectionSheet(UIViewController *presenter, UIWindow *win);
+static void showCustomTargetInputDialog(UIViewController *presenter, UIWindow *win);
+static void showDelaySelectionSheet(UIViewController *presenter, UIWindow *win);
 
 @interface CBSDragManager : NSObject <UIGestureRecognizerDelegate>
 + (instancetype)sharedManager;
@@ -597,11 +810,98 @@ static void relocateLiveTextButton(UIView *button);
     doubleTap.numberOfTapsRequired = 2;
     doubleTap.delegate = self;
     [button addGestureRecognizer:doubleTap];
+    
+    // 3. 三击快捷设置手势（快速连击三次在相机内弹出设置弹窗）
+    UITapGestureRecognizer *tripleTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleTripleTapSettings:)];
+    tripleTap.numberOfTapsRequired = 3;
+    tripleTap.delegate = self;
+    [button addGestureRecognizer:tripleTap];
+    
+    // 让 doubleTap 在 tripleTap 判定失败后再触发，避免手势冲突
+    [doubleTap requireGestureRecognizerToFail:tripleTap];
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
     // 拖动时独占手势，防止相机背景取景器滑动切换模式
     return NO;
+}
+
+- (void)handleTripleTapSettings:(UITapGestureRecognizer *)gesture {
+    UIView *btn = gesture.view;
+    if (!btn) return;
+    
+    g_lastTapTime = [NSDate timeIntervalSinceReferenceDate] + 1.5; // 设置期间屏蔽自动复制
+    triggerHapticFeedback();
+    
+    UIWindow *win = btn.window ?: [UIApplication sharedApplication].keyWindow ?: [UIApplication sharedApplication].windows.firstObject;
+    UIViewController *rootVC = win.rootViewController;
+    while (rootVC.presentedViewController) {
+        rootVC = rootVC.presentedViewController;
+    }
+    if (!rootVC) return;
+    
+    BOOL autoCopy = isAutoCopyEnabled();
+    BOOL openApp = isOpenAppAfterCopyEnabled();
+    NSString *targetApp = getEffectiveTargetApp();
+    NSString *appName = getReadableAppName(targetApp);
+    NSTimeInterval delay = getOpenAppDelay();
+    
+    NSString *msg = [NSString stringWithFormat:@"• 自动全选复制: %@\n• 复制后打开: %@ (%@)\n• 跳转延迟: %.1fs\n\n提示：前往系统「设置」-> CameraButtonSwap 可进行更详细的配置。",
+                     autoCopy ? @"✅ 已开启" : @"❌ 已关闭",
+                     openApp ? @"✅ 已开启" : @"❌ 已关闭",
+                     appName,
+                     delay];
+    
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"⚙️ CameraButtonSwap 设置"
+                                                                   message:msg
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    
+    // 选项 1: 切换自动全选复制
+    [alert addAction:[UIAlertAction actionWithTitle:autoCopy ? @"❌ 关闭「点击自动全选复制」" : @"✅ 开启「点击自动全选复制」"
+                                             style:UIAlertActionStyleDefault
+                                           handler:^(UIAlertAction *action) {
+        setCBSPreference(@"CBS_AutoCopyEnabled", @(!autoCopy));
+        showTipToast(!autoCopy ? @"✅ 已开启自动全选复制" : @"❌ 已关闭自动全选复制", win);
+    }]];
+    
+    // 选项 2: 切换自动打开 App
+    [alert addAction:[UIAlertAction actionWithTitle:openApp ? @"❌ 关闭「复制后自动打开 App」" : @"🚀 开启「复制后自动打开 App」"
+                                             style:UIAlertActionStyleDefault
+                                           handler:^(UIAlertAction *action) {
+        setCBSPreference(@"CBS_OpenAppAfterCopyEnabled", @(!openApp));
+        showTipToast(!openApp ? @"🚀 已开启复制后自动打开 App" : @"❌ 已关闭复制后自动打开 App", win);
+    }]];
+    
+    // 选项 3: 选择目标 App
+    [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"📱 选择目标应用 (当前: %@)", appName]
+                                             style:UIAlertActionStyleDefault
+                                           handler:^(UIAlertAction *action) {
+        showAppSelectionSheet(rootVC, win);
+    }]];
+    
+    // 选项 4: 设置跳转延迟
+    [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"⏱ 调整跳转延迟 (当前: %.1fs)", delay]
+                                             style:UIAlertActionStyleDefault
+                                           handler:^(UIAlertAction *action) {
+        showDelaySelectionSheet(rootVC, win);
+    }]];
+    
+    // 选项 5: 恢复默认位置
+    [alert addAction:[UIAlertAction actionWithTitle:@"🔄 恢复按钮默认左侧位置"
+                                             style:UIAlertActionStyleDefault
+                                           handler:^(UIAlertAction *action) {
+        [self handleDoubleTapReset:nil];
+    }]];
+    
+    // 取消
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    
+    if (alert.popoverPresentationController) {
+        alert.popoverPresentationController.sourceView = btn;
+        alert.popoverPresentationController.sourceRect = btn.bounds;
+    }
+    
+    [rootVC presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)handleLongPressDrag:(UILongPressGestureRecognizer *)gesture {
@@ -700,6 +1000,93 @@ static void relocateLiveTextButton(UIView *button);
 }
 
 @end
+
+// ============================================================================
+// 相机内快捷设置对话框 (In-Camera Settings Alert Sheets)
+// ============================================================================
+
+static void showAppSelectionSheet(UIViewController *presenter, UIWindow *win) {
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"选择复制后自动打开的应用"
+                                                                   message:@"可在系统「设置」-> CameraButtonSwap 查看更多详情"
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    
+    NSArray *apps = @[
+        @{@"name": @"微信 (WeChat)", @"target": @"com.tencent.xin"},
+        @{@"name": @"系统备忘录 (Notes)", @"target": @"com.apple.mobilenotes"},
+        @{@"name": @"快捷指令 (Shortcuts)", @"target": @"com.apple.shortcuts"},
+        @{@"name": @"系统翻译 (Translate)", @"target": @"com.apple.Translate"},
+        @{@"name": @"Safari 浏览器", @"target": @"com.apple.mobilesafari"},
+        @{@"name": @"信息 (Messages)", @"target": @"com.apple.MobileSMS"}
+    ];
+    
+    for (NSDictionary *app in apps) {
+        [sheet addAction:[UIAlertAction actionWithTitle:app[@"name"] style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            setCBSPreference(@"CBS_TargetAppChoice", app[@"target"]);
+            setCBSPreference(@"CBS_OpenAppAfterCopyEnabled", @YES);
+            showTipToast([NSString stringWithFormat:@"✅ 目标已设为: %@", app[@"name"]], win);
+        }]];
+    }
+    
+    [sheet addAction:[UIAlertAction actionWithTitle:@"✏️ 输入自定义 Bundle ID / URL Scheme..." style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        showCustomTargetInputDialog(presenter, win);
+    }]];
+    
+    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    
+    if (sheet.popoverPresentationController) {
+        sheet.popoverPresentationController.sourceView = presenter.view;
+        sheet.popoverPresentationController.sourceRect = CGRectMake(presenter.view.bounds.size.width/2, presenter.view.bounds.size.height/2, 1, 1);
+    }
+    [presenter presentViewController:sheet animated:YES completion:nil];
+}
+
+static void showCustomTargetInputDialog(UIViewController *presenter, UIWindow *win) {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"自定义目标应用"
+                                                                   message:@"请输入 App 的 Bundle ID（如 com.flomo.app）或 URL Scheme（如 drafts://）"
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+        textField.placeholder = @"例如 drafts:// 或 com.flomo.app";
+        textField.text = getCustomAppTarget();
+    }];
+    
+    [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        NSString *val = alert.textFields.firstObject.text;
+        val = [val stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (val.length > 0) {
+            setCBSPreference(@"CBS_CustomAppTarget", val);
+            setCBSPreference(@"CBS_TargetAppChoice", @"custom");
+            setCBSPreference(@"CBS_OpenAppAfterCopyEnabled", @YES);
+            showTipToast([NSString stringWithFormat:@"✅ 已保存自定义目标: %@", val], win);
+        }
+    }]];
+    
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [presenter presentViewController:alert animated:YES completion:nil];
+}
+
+static void showDelaySelectionSheet(UIViewController *presenter, UIWindow *win) {
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"调整跳转延迟时间"
+                                                                   message:@"延迟确保剪贴板与动画写入完成后再平滑跳转"
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    NSArray *delays = @[
+        @{@"title": @"极速 (0.2 秒)", @"val": @0.2},
+        @{@"title": @"适中 (0.4 秒，推荐)", @"val": @0.4},
+        @{@"title": @"从容 (0.7 秒)", @"val": @0.7},
+        @{@"title": @"稍长 (1.0 秒)", @"val": @1.0}
+    ];
+    for (NSDictionary *d in delays) {
+        [sheet addAction:[UIAlertAction actionWithTitle:d[@"title"] style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            setCBSPreference(@"CBS_OpenAppDelay", d[@"val"]);
+            showTipToast([NSString stringWithFormat:@"⏱ 延迟已设为: %@", d[@"title"]], win);
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    if (sheet.popoverPresentationController) {
+        sheet.popoverPresentationController.sourceView = presenter.view;
+        sheet.popoverPresentationController.sourceRect = CGRectMake(presenter.view.bounds.size.width/2, presenter.view.bounds.size.height/2, 1, 1);
+    }
+    [presenter presentViewController:sheet animated:YES completion:nil];
+}
 
 // ============================================================================
 // 精准重定位函数：防重入安全锁 + 优先应用自定义位置
@@ -1041,6 +1428,10 @@ static void relocateLiveTextButton(UIView *button) {
 // 构造函数与初始化
 // ============================================================================
 
+static void onPreferencesChanged(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    writeCBSLog(@"[Prefs] 收到偏好设置变更通知: %@", (__bridge NSString *)name);
+}
+
 %ctor {
     @autoreleasepool {
         NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
@@ -1059,6 +1450,14 @@ static void relocateLiveTextButton(UIView *button) {
             %init(VisionKitCoreHooks, VKCImageAnalysisBaseView = clsBaseView);
         }
         
-        writeCBSLog(@"[Ctor] 全部 Hooks 注册完毕");
+        // 注册偏好设置实时变更通知
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                        NULL,
+                                        (CFNotificationCallback)onPreferencesChanged,
+                                        CBS_PREFS_CHANGED_NOTIF,
+                                        NULL,
+                                        CFNotificationSuspensionBehaviorCoalesce);
+        
+        writeCBSLog(@"[Ctor] 全部 Hooks 与偏好设置监听注册完毕");
     }
 }
